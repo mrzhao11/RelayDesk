@@ -129,17 +129,26 @@ class BaseAgent:
     agent_type: AgentType
     system_prompt: str
 
-    def __init__(self, client: AsyncAnthropic, model: str, skill_manager: Optional[Any] = None):
+    def __init__(
+        self,
+        client: AsyncAnthropic,
+        model: str,
+        skill_manager: Optional[Any] = None,
+        timeout_s: float = 30.0,
+    ):
         self._client = client
         self._model  = model
         self._skill_manager = skill_manager
+        self._timeout_s = max(1.0, timeout_s)
         self.stats   = AgentStats()
 
     async def handle(self, req: Request) -> AgentResponse:
         t0 = time.monotonic()
         self.stats.total += 1
         try:
-            content = await self._call_llm(req)
+            content = await asyncio.wait_for(self._call_llm(req), timeout=self._timeout_s)
+            if not content.strip():
+                raise RuntimeError("模型返回了空响应")
             ms = (time.monotonic() - t0) * 1000
             self.stats.success += 1
             self.stats.total_ms += ms
@@ -151,15 +160,27 @@ class BaseAgent:
                 latency_ms=ms,
                 escalate=escalate,
             )
+        except asyncio.TimeoutError:
+            ms = (time.monotonic() - t0) * 1000
+            self.stats.total_ms += ms
+            logger.error(f"{self.agent_type.value} 处理超时: {self._timeout_s}s")
+            return AgentResponse(
+                agent_type=self.agent_type,
+                content="模型服务响应超时，未执行任何后台操作。请稍后重试或申请人工协助。",
+                success=False,
+                latency_ms=ms,
+                escalate=True,
+            )
         except Exception as ex:
             ms = (time.monotonic() - t0) * 1000
             self.stats.total_ms += ms
             logger.error(f"{self.agent_type.value} 处理失败: {ex}")
             return AgentResponse(
                 agent_type=self.agent_type,
-                content="抱歉，处理您的请求时出现问题，请稍后重试。",
+                content="模型服务暂时不可用，未执行任何后台操作。请稍后重试或申请人工协助。",
                 success=False,
                 latency_ms=ms,
+                escalate=True,
             )
 
     async def _call_llm(self, req: Request) -> str:
@@ -183,6 +204,37 @@ class BaseAgent:
             messages=messages,
         )
         return extract_text_content(resp.content)
+
+    async def synthesize_collaboration(
+        self,
+        req: Request,
+        responses: List[AgentResponse],
+    ) -> str:
+        """由主 Agent 把多个专业回复整合为一个一致、可执行的最终答复。"""
+        source_text = "\n\n".join(
+            f"[{response.agent_type.value}]\n{response.content}"
+            for response in responses
+        )
+        prompt = (
+            f"用户原始请求：{req.message}\n\n"
+            f"专业 Agent 的候选回复：\n{source_text}\n\n"
+            "请整合为一个直接面向用户的中文答复。去除重复内容，明确处理顺序，并保留技术、费用等必要边界。"
+            "只能依据候选回复，不得编造制度、账户状态、财务记录或已执行的后台操作。"
+            "不要展示内部 Agent 名称、路由分数或候选回复标签。"
+        )
+        resp = await self._client.messages.create(
+            model=self._model,
+            max_tokens=1024,
+            system=(
+                f"{self._build_system_prompt(req)}\n\n"
+                "你还负责整合多专业团队意见。输出必须一致、精炼、分步骤且不夸大系统能力。"
+            ),
+            messages=[{"role": "user", "content": prompt}],
+        )
+        content = extract_text_content(resp.content).strip()
+        if not content:
+            raise RuntimeError("协作整合返回了空响应")
+        return content
 
     def _build_system_prompt(self, req: Request) -> str:
         """把动态加载的 Skills 拼入 system prompt，让业务规则随请求生效。"""
@@ -250,8 +302,8 @@ class AgentOrchestrator:
         IntentCategory.REFUND:     AgentType.BILLING,
         IntentCategory.INVOICE:    AgentType.BILLING,
         IntentCategory.PAYMENT_ISSUE: AgentType.BILLING,
-        IntentCategory.ACCOUNT:    AgentType.BILLING,
-        IntentCategory.ACCOUNT_SECURITY: AgentType.BILLING,
+        IntentCategory.ACCOUNT:    AgentType.GENERAL,
+        IntentCategory.ACCOUNT_SECURITY: AgentType.TECHNICAL,
         IntentCategory.ESCALATION: AgentType.ESCALATION,
         IntentCategory.HUMAN_HANDOFF: AgentType.ESCALATION,
         # 其余意图 → GENERAL（默认）
@@ -263,8 +315,15 @@ class AgentOrchestrator:
         base_url: Optional[str] = None,
         model:    str = "claude-3-5-sonnet-20241022",
         skill_manager: Optional[Any] = None,
+        llm_timeout_s: float = 30.0,
+        llm_max_retries: int = 1,
     ):
-        kwargs: Dict[str, Any] = {"api_key": api_key}
+        self._llm_timeout_s = max(1.0, llm_timeout_s)
+        kwargs: Dict[str, Any] = {
+            "api_key": api_key,
+            "timeout": self._llm_timeout_s,
+            "max_retries": max(0, llm_max_retries),
+        }
         if base_url:
             kwargs["base_url"] = base_url
         client = AsyncAnthropic(**kwargs)
@@ -274,9 +333,9 @@ class AgentOrchestrator:
 
         # Agent 池：每种类型可有多个实例（水平扩展）
         self._pool: Dict[AgentType, List[BaseAgent]] = {
-            AgentType.GENERAL:   [GeneralAgent(client, model, skill_manager)],
-            AgentType.TECHNICAL: [TechnicalAgent(client, model, skill_manager)],
-            AgentType.BILLING:   [BillingAgent(client, model, skill_manager)],
+            AgentType.GENERAL:   [GeneralAgent(client, model, skill_manager, self._llm_timeout_s)],
+            AgentType.TECHNICAL: [TechnicalAgent(client, model, skill_manager, self._llm_timeout_s)],
+            AgentType.BILLING:   [BillingAgent(client, model, skill_manager, self._llm_timeout_s)],
         }
 
     def set_skill_manager(self, skill_manager: Optional[Any]) -> None:
@@ -292,7 +351,10 @@ class AgentOrchestrator:
         history: Optional[List[Dict[str, str]]] = None,
     ):
         """对外暴露意图识别，供 API 层先判断是否需要 RAG 等前置能力。"""
-        return await self._intent_recognizer.recognize(message, history=history)
+        return await asyncio.wait_for(
+            self._intent_recognizer.recognize(message, history=history),
+            timeout=self._llm_timeout_s,
+        )
 
     # ── 主入口 ────────────────────────────────────────────────────────────────
 
@@ -305,7 +367,7 @@ class AgentOrchestrator:
 
         # 1. 意图识别（如果调用方已识别则跳过）
         if req.intent is None:
-            intent_result = await self._intent_recognizer.recognize(req.message, history=req.history)
+            intent_result = await self.recognize_intent(req.message, history=req.history)
             req.intent  = intent_result.intent
             req.intent_group = intent_result.intent_group
             req.urgency = intent_result.urgency
@@ -314,7 +376,7 @@ class AgentOrchestrator:
         if self._needs_clarification(req):
             return OrchestratorResult(
                 request_id=req.request_id,
-                response="我还不能确定您要处理的是哪类问题。请补充一下是订单物流、退款账单、账户资料，还是技术故障？",
+                response="我还不能确定您要处理的是哪类问题。请补充一下是通用服务、账户问题、技术故障、费用结算，还是需要人工协助？",
                 agent_type=AgentType.GENERAL,
                 intent=req.intent,
                 escalated=False,
@@ -367,15 +429,41 @@ class AgentOrchestrator:
         tasks = [self._execute(req, at) for at in agent_types]
         responses = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # 合并：主 Agent 在前，辅助 Agent 在后。
-        parts = []
-        for r in responses:
-            if isinstance(r, AgentResponse) and r.success:
-                role = "主处理" if r.agent_type == decision.primary_agent else "辅助处理"
-                parts.append(f"[{r.agent_type.value} - {role}]\n{r.content}")
+        successful = [
+            response
+            for response in responses
+            if isinstance(response, AgentResponse) and response.success
+        ]
+        all_failed = not successful
+        if len(successful) == 1:
+            combined = successful[0].content
+        elif successful:
+            primary = self._best_agent(decision.primary_agent) or self._best_agent(AgentType.GENERAL)
+            try:
+                if primary is None:
+                    raise RuntimeError("没有可用的主 Agent 负责整合")
+                combined = await asyncio.wait_for(
+                    primary.synthesize_collaboration(req, successful),
+                    timeout=self._llm_timeout_s,
+                )
+            except Exception as ex:
+                logger.warning(f"协作结果整合失败，使用结构化降级结果: {ex}")
+                labels = {
+                    AgentType.GENERAL: "综合服务建议",
+                    AgentType.TECHNICAL: "技术排查建议",
+                    AgentType.BILLING: "费用核验建议",
+                }
+                combined = "\n\n".join(
+                    f"{labels.get(response.agent_type, '处理建议')}：\n{response.content}"
+                    for response in successful
+                )
+        else:
+            combined = "模型服务暂时不可用，未执行任何后台操作。请稍后重试或申请人工协助。"
 
-        combined = "\n\n".join(parts) if parts else "抱歉，所有 Agent 均处理失败。"
-        escalated = any(isinstance(r, AgentResponse) and r.escalate for r in responses)
+        escalated = all_failed or any(
+            isinstance(response, AgentResponse) and response.escalate
+            for response in responses
+        )
 
         return OrchestratorResult(
             request_id=req.request_id,
@@ -385,8 +473,8 @@ class AgentOrchestrator:
             escalated=escalated,
             latency_ms=(time.monotonic() - t0) * 1000,
             agent_types=[
-                r.agent_type for r in responses
-                if isinstance(r, AgentResponse) and r.success
+                response.agent_type for response in responses
+                if isinstance(response, AgentResponse) and response.success
             ] or agent_types,
             primary_agent=decision.primary_agent,
             supporting_agents=decision.supporting_agents,
@@ -502,13 +590,17 @@ class AgentOrchestrator:
 
         if req.intent in (
             IntentCategory.BILLING,
-            IntentCategory.ACCOUNT,
-            IntentCategory.ACCOUNT_SECURITY,
             IntentCategory.REFUND,
             IntentCategory.INVOICE,
             IntentCategory.PAYMENT_ISSUE,
         ):
             scores[AgentType.BILLING] += 0.75
+
+        if req.intent == IntentCategory.ACCOUNT:
+            scores[AgentType.GENERAL] += 0.75
+
+        if req.intent == IntentCategory.ACCOUNT_SECURITY:
+            scores[AgentType.TECHNICAL] += 0.75
 
         technical_kws = ["崩溃", "报错", "error", "crash", "无法登录", "登录失败", "500", "401", "验证码"]
         billing_kws = ["退款", "退货", "扣款", "发票", "账单", "支付", "订阅", "refund", "invoice", "多扣"]
@@ -567,12 +659,11 @@ class AgentOrchestrator:
             IntentCategory.TECHNICAL,
             IntentCategory.TECHNICAL_LOGIN,
             IntentCategory.TECHNICAL_CRASH,
+            IntentCategory.ACCOUNT_SECURITY,
         ) or any(kw in msg for kw in technical_kws):
             targets.append(AgentType.TECHNICAL)
         if req.intent in (
             IntentCategory.BILLING,
-            IntentCategory.ACCOUNT,
-            IntentCategory.ACCOUNT_SECURITY,
             IntentCategory.REFUND,
             IntentCategory.INVOICE,
             IntentCategory.PAYMENT_ISSUE,

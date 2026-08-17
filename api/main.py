@@ -5,6 +5,7 @@ RelayDesk 企业统一服务台 — FastAPI 入口
 所有核心组件在 lifespan 中初始化，通过环境变量配置。
 """
 import asyncio
+import hmac
 import logging
 import os
 import pathlib
@@ -20,7 +21,7 @@ if _ROOT not in sys.path:
 
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Response, UploadFile, File
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel, Field
@@ -64,6 +65,29 @@ def _anthropic_cfg() -> Dict[str, Any]:
     return cfg
 
 
+def _env_list(name: str, default: str) -> List[str]:
+    """读取逗号分隔配置，忽略空项。"""
+    return [item.strip() for item in os.getenv(name, default).split(",") if item.strip()]
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _require_admin_key(
+    provided_key: Optional[str] = Header(default=None, alias="X-RelayDesk-Admin-Key"),
+) -> None:
+    """保护会改变系统状态或触发高成本任务的管理接口。"""
+    expected_key = os.getenv("RELAYDESK_ADMIN_KEY", "").strip()
+    if not expected_key:
+        raise HTTPException(503, "管理接口未配置 RELAYDESK_ADMIN_KEY")
+    if not provided_key or not hmac.compare_digest(provided_key, expected_key):
+        raise HTTPException(401, "管理密钥无效")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _orchestrator, _memory, _tool_manager, _monitor, _evaluator, _skill_manager
@@ -103,6 +127,8 @@ async def lifespan(app: FastAPI):
         base_url=cfg.get("base_url"),
         model=cfg["model"],
         skill_manager=_skill_manager,
+        llm_timeout_s=float(os.getenv("LLM_TIMEOUT_SECONDS", "30")),
+        llm_max_retries=int(os.getenv("LLM_MAX_RETRIES", "1")),
     )
 
     # 记忆管理器（Redis 工作记忆 + ChromaDB 情景记忆/用户画像）
@@ -194,11 +220,24 @@ app = FastAPI(
     docs_url="/docs",
 )
 
+_cors_origins = _env_list(
+    "CORS_ORIGINS",
+    "http://localhost,http://localhost:5173,http://127.0.0.1:5173",
+)
+_cors_allow_credentials = _env_bool("CORS_ALLOW_CREDENTIALS", default=False)
+if "*" in _cors_origins and os.getenv("APP_ENV", "production").strip().lower() == "production":
+    logger.warning("生产环境不允许 CORS_ORIGINS=*，已限制为本机前端来源")
+    _cors_origins = ["http://localhost", "http://localhost:5173", "http://127.0.0.1:5173"]
+if "*" in _cors_origins and _cors_allow_credentials:
+    logger.warning("CORS_ORIGINS=* 时不能安全启用凭证，已自动关闭 CORS credentials")
+    _cors_allow_credentials = False
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_allow_credentials,
+    allow_methods=_env_list("CORS_ALLOW_METHODS", "GET,POST,OPTIONS"),
+    allow_headers=_env_list("CORS_ALLOW_HEADERS", "Content-Type,X-RelayDesk-Admin-Key"),
 )
 
 
@@ -245,7 +284,7 @@ async def skills_summary():
 
 
 @app.post("/skills/reload", tags=["Skills"])
-async def reload_skills():
+async def reload_skills(_: None = Depends(_require_admin_key)):
     """运行时重新扫描 Skill 目录，不需要重启服务。"""
     if _skill_manager is None:
         raise HTTPException(503, "Skills 未初始化")
@@ -278,7 +317,13 @@ async def chat(req: ChatRequest):
         for m in mem_ctx.recent_messages[-5:]
     ] if mem_ctx.recent_messages else None
 
-    intent_result = await _orchestrator.recognize_intent(req.message, history=history)
+    try:
+        intent_result = await _orchestrator.recognize_intent(req.message, history=history)
+    except asyncio.TimeoutError as ex:
+        raise HTTPException(503, "模型服务响应超时，请稍后重试") from ex
+    except Exception as ex:
+        logger.error(f"意图识别服务不可用: {ex}")
+        raise HTTPException(503, "模型服务暂时不可用，请检查模型配置后重试") from ex
     knowledge_text, knowledge_used = await _build_knowledge_context(req.message, intent=intent_result.intent)
     context_parts = [mem_ctx.to_prompt_text()]
     if knowledge_text:
@@ -339,10 +384,15 @@ async def _build_knowledge_context(message: str, intent=None, top_k: int = 3) ->
     if not _should_use_knowledge(message, intent=intent):
         return "", False
     try:
-        result = await _tool_manager.search_with_rewrite("knowledge_search", message, top_k=top_k)
+        timeout_s = max(1.0, float(os.getenv("RAG_TIMEOUT_SECONDS", "20")))
+        result = await asyncio.wait_for(
+            _tool_manager.search_with_rewrite("knowledge_search", message, top_k=top_k),
+            timeout=timeout_s,
+        )
         if not result.success or not isinstance(result.data, list) or not result.data:
             return "", False
 
+        min_score = float(os.getenv("RAG_MIN_SCORE", "0.20"))
         parts = ["[知识库检索结果]"]
         used = False
         for i, item in enumerate(result.data[:top_k], start=1):
@@ -353,7 +403,12 @@ async def _build_knowledge_context(message: str, intent=None, top_k: int = 3) ->
                 continue
             title = str(item.get("title", "未命名文档"))
             content = str(item.get("content", "")).strip()
-            score = item.get("score", "")
+            try:
+                score = float(item.get("score"))
+            except (TypeError, ValueError):
+                continue
+            if score < min_score:
+                continue
             if not content:
                 continue
             used = True
@@ -452,7 +507,7 @@ class EvalRunInput(BaseModel):
 
 
 @app.post("/knowledge/add", tags=["知识库"])
-async def add_knowledge(body: BatchDocInput):
+async def add_knowledge(body: BatchDocInput, _: None = Depends(_require_admin_key)):
     """
     批量导入文档到知识库。
 
@@ -478,7 +533,10 @@ async def add_knowledge(body: BatchDocInput):
 
 
 @app.post("/knowledge/upload", tags=["知识库"])
-async def upload_knowledge(file: UploadFile = File(...)):
+async def upload_knowledge(
+    file: UploadFile = File(...),
+    _: None = Depends(_require_admin_key),
+):
     """
     上传文件导入知识库。
 
@@ -533,7 +591,10 @@ async def knowledge_stats():
 
 
 @app.post("/eval/run")
-async def run_eval(body: Optional[EvalRunInput] = None):
+async def run_eval(
+    body: Optional[EvalRunInput] = None,
+    _: None = Depends(_require_admin_key),
+):
     """运行内置评测用例，返回评测报告。"""
     if _evaluator is None:
         raise HTTPException(503, "服务未就绪")
@@ -603,6 +664,8 @@ async def _cli():
         base_url=cfg.get("base_url"),
         model=cfg["model"],
         skill_manager=skill_manager,
+        llm_timeout_s=float(os.getenv("LLM_TIMEOUT_SECONDS", "30")),
+        llm_max_retries=int(os.getenv("LLM_MAX_RETRIES", "1")),
     )
     mem  = MemoryManager(
         redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),

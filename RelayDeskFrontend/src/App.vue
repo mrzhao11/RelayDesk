@@ -2,7 +2,7 @@
   <main class="app-shell">
     <aside class="sidebar">
       <section class="brand">
-        <div class="brand-mark">EM</div>
+        <div class="brand-mark">RD</div>
         <div>
           <h1>RelayDesk 企业统一服务台</h1>
           <p>多 Agent 企业服务请求协同</p>
@@ -40,6 +40,10 @@
         <label>
           <span>会话 ID</span>
           <input v-model="settings.conversationId" @change="persist" placeholder="自动生成" />
+        </label>
+        <label>
+          <span>管理密钥（仅知识导入）</span>
+          <input v-model="settings.adminKey" type="password" autocomplete="off" @change="persist" placeholder="X-RelayDesk-Admin-Key" />
         </label>
 
         <div class="actions">

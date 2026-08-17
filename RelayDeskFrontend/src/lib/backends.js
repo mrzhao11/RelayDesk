@@ -16,9 +16,11 @@ const DEFAULT_BACKENDS = {
 export function createInitialSettings() {
   const saved = readSettings()
   return {
-    backend: saved.backend || 'java',
+    settingsVersion: 2,
+    backend: saved.settingsVersion === 2 ? (saved.backend || 'python') : 'python',
     userId: saved.userId || 'u1001',
     conversationId: saved.conversationId || '',
+    adminKey: '',
     endpoints: {
       python: saved.endpoints?.python || DEFAULT_BACKENDS.python.baseUrl,
       java: saved.endpoints?.java || DEFAULT_BACKENDS.java.baseUrl
@@ -27,7 +29,8 @@ export function createInitialSettings() {
 }
 
 export function saveSettings(settings) {
-  localStorage.setItem('relaydesk.frontend.settings', JSON.stringify(settings))
+  const { adminKey: _adminKey, ...safeSettings } = settings
+  localStorage.setItem('relaydesk.frontend.settings', JSON.stringify(safeSettings))
 }
 
 export function backendMeta(type, settings) {
@@ -51,7 +54,10 @@ export async function requestKnowledgeStats(type, settings) {
 }
 
 export async function requestSearch(type, settings, query, topK = 5) {
-  const params = new URLSearchParams({ query, topK: String(topK) })
+  const params = new URLSearchParams({
+    query,
+    [type === 'python' ? 'top_k' : 'topK']: String(topK)
+  })
   return requestJson(backendMeta(type, settings).baseUrl, `/search?${params}`, { method: 'POST' })
 }
 
@@ -69,7 +75,7 @@ export async function requestChat(type, settings, message) {
 export async function addKnowledge(type, settings, documents) {
   return requestJson(backendMeta(type, settings).baseUrl, '/knowledge/add', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: adminHeaders(settings, { 'Content-Type': 'application/json' }),
     body: JSON.stringify({ documents })
   })
 }
@@ -79,8 +85,16 @@ export async function uploadKnowledge(type, settings, file) {
   form.append('file', file)
   return requestJson(backendMeta(type, settings).baseUrl, '/knowledge/upload', {
     method: 'POST',
+    headers: adminHeaders(settings),
     body: form
   })
+}
+
+function adminHeaders(settings, headers = {}) {
+  const key = String(settings.adminKey || '').trim()
+  return key
+    ? { ...headers, 'X-RelayDesk-Admin-Key': key }
+    : headers
 }
 
 function buildChatPayload(type, settings, message) {

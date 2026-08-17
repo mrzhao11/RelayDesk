@@ -37,6 +37,11 @@ RelayDesk/
 ├── mcp/knowledge_base.py          # ChromaDB RAG 知识库
 ├── monitor/performance_monitor.py # Agent/工具在线监控
 ├── evaluation/evaluator.py        # 端到端评测
+├── skills/                        # 三类动态企业服务规范
+├── RelayDeskFrontend/             # Vue 前端，与后端同仓库
+├── tests/test_hardening.py        # 路由、RAG、协作和管理鉴权回归测试
+├── scripts/smoke_acceptance.py    # 八个最小验收场景 HTTP 冒烟脚本
+├── MIGRATION_NOTES.md             # 最小场景迁移与硬伤修复说明
 ├── docker-compose.yml             # Docker 全栈编排
 ├── Dockerfile
 ├── requirements.txt
@@ -63,6 +68,20 @@ cp .env.example .env
 
 ```env
 ANTHROPIC_API_KEY=your_api_key
+RELAYDESK_ADMIN_KEY=replace_with_a_long_random_value
+```
+
+`RELAYDESK_ADMIN_KEY` 用于保护知识写入、Skills 重载和评测接口；调用时通过
+`X-RelayDesk-Admin-Key` 请求头传递。聊天、检索和只读状态接口不需要该密钥。
+
+建议同时保留以下可靠性与安全默认值：
+
+```env
+LLM_TIMEOUT_SECONDS=30
+LLM_MAX_RETRIES=1
+RAG_MIN_SCORE=0.20
+RAG_TIMEOUT_SECONDS=20
+CORS_ORIGINS=http://localhost,http://localhost:5173,http://127.0.0.1:5173
 ```
 
 如果使用 DeepSeek 这类 Anthropic 兼容接口，可以配置：
@@ -242,11 +261,11 @@ http://localhost/docs
 | `GET` | `/monitor` | 无 | 查看 Agent/工具统计、告警和优化建议 | 观察在线表现 |
 | `POST` | `/search` | Query 参数 | 执行知识库检索优化链路：查询改写、并行召回、合并去重、LLM 重排 | 测试 RAG 检索 |
 | `GET` | `/skills` | 无 | 查看当前加载的 Skills、匹配关键词和解析错误 | 确认动态能力是否生效 |
-| `POST` | `/skills/reload` | 无 | 运行时重新扫描 Skill 目录 | 修改业务规则后热加载 |
-| `POST` | `/knowledge/add` | JSON Body | 批量导入文档到 ChromaDB 知识库 | 程序化导入文档 |
-| `POST` | `/knowledge/upload` | Form File | 上传 `.txt`、`.md`、`.json` 文件导入知识库 | 手动上传知识库文件 |
+| `POST` | `/skills/reload` | 管理密钥 Header | 运行时重新扫描 Skill 目录 | 修改业务规则后热加载 |
+| `POST` | `/knowledge/add` | 管理密钥 Header + JSON Body | 批量导入文档到 ChromaDB 知识库 | 程序化导入文档 |
+| `POST` | `/knowledge/upload` | 管理密钥 Header + Form File | 上传 `.txt`、`.md`、`.json` 文件导入知识库 | 手动上传知识库文件 |
 | `GET` | `/knowledge/stats` | 无 | 查看知识库文档片段总数 | 确认知识库是否有数据 |
-| `POST` | `/eval/run` | 无 | 运行内置意图识别和端到端对话评测 | 演示 LLM-as-Judge 评测 |
+| `POST` | `/eval/run` | 管理密钥 Header | 运行内置意图识别和端到端对话评测 | 演示 LLM-as-Judge 评测 |
 | `GET` | `/docs` | 浏览器访问 | Swagger UI | 浏览和调试所有接口 |
 
 ### 5.2 Skills 动态能力加载
@@ -295,7 +314,8 @@ curl http://localhost:8000/skills
 修改 Skill 文件后热加载：
 
 ```bash
-curl -X POST http://localhost:8000/skills/reload
+curl -X POST http://localhost:8000/skills/reload \
+  -H "X-RelayDesk-Admin-Key: $RELAYDESK_ADMIN_KEY"
 ```
 
 ### 5.3 `/health`
@@ -406,6 +426,7 @@ curl -X POST "http://localhost:8000/search?query=退款多久到账&top_k=3"
 
 ```bash
 curl -X POST http://localhost:8000/knowledge/upload \
+  -H "X-RelayDesk-Admin-Key: $RELAYDESK_ADMIN_KEY" \
   -F "file=@data/demo_docs/sample_knowledge.json"
 ```
 
@@ -439,7 +460,8 @@ curl http://localhost:8000/monitor
 用途：运行内置评测。
 
 ```bash
-curl -X POST http://localhost:8000/eval/run
+curl -X POST http://localhost:8000/eval/run \
+  -H "X-RelayDesk-Admin-Key: $RELAYDESK_ADMIN_KEY"
 ```
 
 返回内容包括：
@@ -581,6 +603,7 @@ curl http://localhost:8000/knowledge/stats
 
 ```bash
 curl -X POST http://localhost:8000/knowledge/add \
+  -H "X-RelayDesk-Admin-Key: $RELAYDESK_ADMIN_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "documents": [
@@ -604,6 +627,7 @@ curl -X POST http://localhost:8000/knowledge/add \
 
 ```bash
 curl -X POST http://localhost:8000/knowledge/upload \
+  -H "X-RelayDesk-Admin-Key: $RELAYDESK_ADMIN_KEY" \
   -F "file=@data/demo_docs/troubleshooting.md"
 ```
 
@@ -611,6 +635,7 @@ curl -X POST http://localhost:8000/knowledge/upload \
 
 ```bash
 curl -X POST http://localhost:8000/knowledge/upload \
+  -H "X-RelayDesk-Admin-Key: $RELAYDESK_ADMIN_KEY" \
   -F "file=@data/demo_docs/sample_knowledge.json"
 ```
 
@@ -1210,7 +1235,8 @@ http://localhost:9090
 ## 13. 运行端到端评测
 
 ```bash
-curl -X POST http://localhost:8000/eval/run
+curl -X POST http://localhost:8000/eval/run \
+  -H "X-RelayDesk-Admin-Key: $RELAYDESK_ADMIN_KEY"
 ```
 
 评测内容：
@@ -1339,6 +1365,7 @@ curl http://localhost:8000/knowledge/stats
 
 ```bash
 curl -X POST http://localhost:8000/knowledge/upload \
+  -H "X-RelayDesk-Admin-Key: $RELAYDESK_ADMIN_KEY" \
   -F "file=@data/demo_docs/sample_knowledge.json"
 ```
 
@@ -1388,6 +1415,7 @@ curl http://localhost:8000/knowledge/stats
 
 # 5. 导入演示知识库
 curl -X POST http://localhost:8000/knowledge/upload \
+  -H "X-RelayDesk-Admin-Key: $RELAYDESK_ADMIN_KEY" \
   -F "file=@data/demo_docs/sample_knowledge.json"
 
 # 6. 检索
@@ -1400,5 +1428,6 @@ curl http://localhost:8000/monitor
 curl http://localhost:8000/skills
 
 # 9. 评测
-curl -X POST http://localhost:8000/eval/run
+curl -X POST http://localhost:8000/eval/run \
+  -H "X-RelayDesk-Admin-Key: $RELAYDESK_ADMIN_KEY"
 ```
