@@ -27,7 +27,7 @@ export function createInitialSettings() {
 }
 
 export function saveSettings(settings) {
-  localStorage.setItem('echomind.frontend.settings', JSON.stringify(settings))
+  localStorage.setItem('relaydesk.frontend.settings', JSON.stringify(settings))
 }
 
 export function backendMeta(type, settings) {
@@ -137,7 +137,7 @@ function normalizeBaseUrl(value) {
 
 function readSettings() {
   try {
-    return JSON.parse(localStorage.getItem('echomind.frontend.settings') || '{}')
+    return JSON.parse(localStorage.getItem('relaydesk.frontend.settings') || '{}')
   } catch {
     return {}
   }

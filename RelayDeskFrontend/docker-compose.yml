@@ -1,9 +1,9 @@
 services:
-  echomind-frontend:
+  relaydesk-frontend:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: echomind-frontend
+    container_name: relaydesk-frontend
     ports:
       - "5174:80"
     extra_hosts:

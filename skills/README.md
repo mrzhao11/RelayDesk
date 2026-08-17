@@ -1,6 +1,6 @@
-# EchoMind Skills 文档
+# RelayDesk Skills 文档
 
-EchoMind 启动时会从 `ECHOMIND_SKILLS_DIR` 读取 Skills，并在匹配用户请求时注入到对应 Agent 的 system prompt。Skills 适合维护企业服务规范、沟通要求、技术排障 SOP、费用核验边界、升级规则和禁止事项。
+RelayDesk 启动时会从 `RELAYDESK_SKILLS_DIR` 读取 Skills，并在匹配用户请求时注入到对应 Agent 的 system prompt。Skills 适合维护企业服务规范、沟通要求、技术排障 SOP、费用核验边界、升级规则和禁止事项。
 
 当前内置三类 Skills：
 

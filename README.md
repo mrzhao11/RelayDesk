@@ -1,8 +1,8 @@
-# EchoMind 完整使用指南
+# RelayDesk 完整使用指南
 
-本文档说明 EchoMind 的部署、启动、API 调用、知识库使用、ChromaDB 数据查看、监控评测和常见排障。
+本文档说明 RelayDesk 的部署、启动、API 调用、知识库使用、ChromaDB 数据查看、监控评测和常见排障。
 
-EchoMind 是一个面向企业统一服务场景的多 Agent 请求协同系统，通过细粒度意图识别、按需 RAG、结构化主辅 Agent 路由、动态 Skills 和分层记忆，为用户提供综合咨询、技术支持、账户服务、费用结算和人工升级。
+RelayDesk 是一个面向企业统一服务场景的多 Agent 请求协同系统，通过细粒度意图识别、按需 RAG、结构化主辅 Agent 路由、动态 Skills 和分层记忆，为用户提供综合咨询、技术支持、账户服务、费用结算和人工升级。
 
 现有 Agent 对外角色如下，内部枚举和值保持兼容：
 
@@ -28,7 +28,7 @@ EchoMind 是一个面向企业统一服务场景的多 Agent 请求协同系统�
 ## 1. 项目结构
 
 ```text
-EchoMind/
+RelayDesk/
 ├── api/main.py                    # FastAPI 入口，/chat /search /knowledge /monitor /eval
 ├── core/intent_recognizer.py      # 三路融合意图识别
 ├── agents/agent_orchestrator.py   # 多 Agent 路由编排
@@ -76,21 +76,21 @@ ANTHROPIC_API_KEY=your_deepseek_key
 Docker Compose 场景下，Redis 和 ChromaDB 的连接由 `docker-compose.yml` 覆盖为容器内地址。通常不需要手动改：
 
 ```env
-REDIS_PASSWORD=echomind123
+REDIS_PASSWORD=relaydesk123
 CHROMA_HOST=localhost
 CHROMA_PORT=8001
 ```
 
 ### 2.3 全栈部署和 run 开发模式的区别
 
-EchoMind 常用两种 Docker 启动方式：`docker compose up` 全栈部署，以及 `docker run` 开发模式。两者最大的区别是：**全栈部署会同时启动应用和依赖服务；run 开发模式通常只手动运行一个应用容器，依赖服务需要提前启动**。
+RelayDesk 常用两种 Docker 启动方式：`docker compose up` 全栈部署，以及 `docker run` 开发模式。两者最大的区别是：**全栈部署会同时启动应用和依赖服务；run 开发模式通常只手动运行一个应用容器，依赖服务需要提前启动**。
 
 | 对比项 | Docker Compose 全栈部署 | Docker run 开发模式 |
 |--------|--------------------------|----------------------|
-| 启动命令 | `docker compose up -d --build` | `docker run ... echomind ...` |
-| 启动内容 | EchoMind、Redis、ChromaDB、Prometheus、Nginx | 只启动你指定的单个容器 |
+| 启动命令 | `docker compose up -d --build` | `docker run ... relaydesk ...` |
+| 启动内容 | RelayDesk、Redis、ChromaDB、Prometheus、Nginx | 只启动你指定的单个容器 |
 | Redis/ChromaDB | 自动启动并加入同一网络 | 必须先执行 `docker compose up -d redis chromadb` |
-| 容器网络 | Compose 自动创建并管理 | 需要手动指定 `--network echomind_echomind-network` |
+| 容器网络 | Compose 自动创建并管理 | 需要手动指定 `--network relaydesk_relaydesk-network` |
 | 服务名解析 | 应用可直接访问 `redis`、`chromadb` | 只有加入同一网络后才可访问 `redis`、`chromadb` |
 | 代码更新 | 通常需要 rebuild 或重启服务 | 挂载 `-v "$(pwd):/workspace"` 后，代码修改可直接生效，重启容器即可 |
 | 适合场景 | 演示、联调、完整部署、HTTP API 服务 | 本地开发、调试 CLI、临时覆盖环境变量 |
@@ -100,7 +100,7 @@ EchoMind 常用两种 Docker 启动方式：`docker compose up` 全栈部署，�
 
 - 想完整体验 HTTP API、Swagger、Nginx、Prometheus：用 **Docker Compose 全栈部署**。
 - 想调试源码或 CLI，并且希望本地改代码后快速重跑：用 **Docker run 开发模式**。
-- 如果只是跑 CLI，最省心的方式是 `docker compose run --rm echomind python api/main.py --cli`，它会自动使用 Compose 网络。
+- 如果只是跑 CLI，最省心的方式是 `docker compose run --rm relaydesk python api/main.py --cli`，它会自动使用 Compose 网络。
 
 ## 3. Docker Compose 全栈部署
 
@@ -119,20 +119,20 @@ docker compose ps
 查看应用日志：
 
 ```bash
-docker compose logs -f echomind
+docker compose logs -f relaydesk
 ```
 
-看到 EchoMind 启动日志并且健康检查通过后，服务可用。
+看到 RelayDesk 启动日志并且健康检查通过后，服务可用。
 
 启动后的端口：
 
 | 服务 | 容器名 | 宿主机端口 | 容器内端口 | 用途 |
 |------|--------|------------|------------|------|
-| EchoMind API | `echomind-app` | `8000` | `8000` | 主 API 服务 |
-| Nginx | `echomind-nginx` | `80` | `80` | 反向代理 |
-| ChromaDB | `echomind-chromadb` | `8001` | `8000` | 向量数据库 |
-| Redis | `echomind-redis` | `6379` | `6379` | 工作记忆 |
-| Prometheus | `echomind-prometheus` | `9090` | `9090` | 监控数据 |
+| RelayDesk API | `relaydesk-app` | `8000` | `8000` | 主 API 服务 |
+| Nginx | `relaydesk-nginx` | `80` | `80` | 反向代理 |
+| ChromaDB | `relaydesk-chromadb` | `8001` | `8000` | 向量数据库 |
+| Redis | `relaydesk-redis` | `6379` | `6379` | 工作记忆 |
+| Prometheus | `relaydesk-prometheus` | `9090` | `9090` | 监控数据 |
 
 健康检查：
 
@@ -165,47 +165,47 @@ docker compose up -d redis chromadb
 构建镜像：
 
 ```bash
-docker compose build --no-cache echomind
+docker compose build --no-cache relaydesk
 ```
 
 启动 HTTP 服务：
 
 ```bash
 docker run -it --rm \
-  --network echomind_echomind-network \
+  --network relaydesk_relaydesk-network \
   -p 8000:8000 \
   -e ANTHROPIC_BASE_URL="https://api.deepseek.com/anthropic" \
   -e ANTHROPIC_API_KEY="your_key" \
   -e ANTHROPIC_MODEL="deepseek-v4-pro" \
-  -e REDIS_URL="redis://:echomind123@redis:6379/0" \
+  -e REDIS_URL="redis://:relaydesk123@redis:6379/0" \
   -e CHROMA_HOST="chromadb" \
   -e CHROMA_PORT="8000" \
   -e CHROMA_PERSIST_DIRECTORY="/workspace/data/chroma" \
   -v "$(pwd):/workspace" \
   -w /workspace \
-  echomind
+  relaydesk
 ```
 
 CLI 交互模式：
 
 ```bash
 docker run -it --rm \
-  --network echomind_echomind-network \
+  --network relaydesk_relaydesk-network \
   -e ANTHROPIC_BASE_URL="https://api.deepseek.com/anthropic" \
   -e ANTHROPIC_API_KEY="your_key" \
   -e ANTHROPIC_MODEL="deepseek-v4-pro" \
-  -e REDIS_URL="redis://:echomind123@redis:6379/0" \
+  -e REDIS_URL="redis://:relaydesk123@redis:6379/0" \
   -e CHROMA_HOST="chromadb" \
   -e CHROMA_PORT="8000" \
   -v "$(pwd):/workspace" \
   -w /workspace \
-  echomind \
+  relaydesk \
   python api/main.py --cli
 ```
 
 ## 5. Swagger 和接口总览
 
-EchoMind 基于 FastAPI 构建，启动 HTTP 服务后可以直接在浏览器访问 Swagger UI 调用接口。
+RelayDesk 基于 FastAPI 构建，启动 HTTP 服务后可以直接在浏览器访问 Swagger UI 调用接口。
 
 本地 Swagger 地址：
 
@@ -251,13 +251,13 @@ http://localhost/docs
 
 ### 5.2 Skills 动态能力加载
 
-EchoMind 支持从目录加载 Skills，用来把业务流程、客服话术、排障 SOP 等规则动态注入 Agent。
+RelayDesk 支持从目录加载 Skills，用来把业务流程、客服话术、排障 SOP 等规则动态注入 Agent。
 
 默认配置：
 
 ```env
-ECHOMIND_SKILLS_DIR=./skills
-ECHOMIND_SKILLS_MAX_PROMPT_CHARS=5000
+RELAYDESK_SKILLS_DIR=./skills
+RELAYDESK_SKILLS_MAX_PROMPT_CHARS=5000
 ```
 
 推荐结构：
@@ -358,7 +358,7 @@ curl http://localhost:8000/health
 
 ### 5.5 `/search`
 
-用途：测试内部知识库工具和 RAG 检索优化。EchoMind 实现了内部工具注册与可靠性治理框架，目前接入 `knowledge_search`，并支持缓存、超时、熔断、fallback、查询改写和结果重排；当前不属于完整标准 MCP Server 实现。
+用途：测试内部知识库工具和 RAG 检索优化。RelayDesk 实现了内部工具注册与可靠性治理框架，目前接入 `knowledge_search`，并支持缓存、超时、熔断、fallback、查询改写和结果重排；当前不属于完整标准 MCP Server 实现。
 
 Query 参数：
 
@@ -555,7 +555,7 @@ curl -X POST http://localhost:8000/chat \
 
 ## 7. 知识库使用
 
-EchoMind 的知识库由 `mcp/knowledge_base.py` 管理，底层使用 ChromaDB collection：
+RelayDesk 的知识库由 `mcp/knowledge_base.py` 管理，底层使用 ChromaDB collection：
 
 ```text
 knowledge_base
@@ -661,7 +661,7 @@ curl -X POST "http://localhost:8000/search?query=退款需要多久到账&top_k=
 
 ## 8. ChromaDB 在项目中的用途
 
-EchoMind 使用了三个 ChromaDB collection：
+RelayDesk 使用了三个 ChromaDB collection：
 
 | Collection | 模块 | 作用 |
 |------------|------|------|
@@ -682,7 +682,7 @@ EchoMind 使用了三个 ChromaDB collection：
 Compose 中 ChromaDB 容器名是：
 
 ```text
-echomind-chromadb
+relaydesk-chromadb
 ```
 
 宿主机访问端口是：
@@ -708,7 +708,7 @@ curl http://localhost:8001/api/v1/heartbeat
 容器内执行：
 
 ```bash
-docker exec -it echomind-chromadb curl http://localhost:8000/api/v1/heartbeat
+docker exec -it relaydesk-chromadb curl http://localhost:8000/api/v1/heartbeat
 ```
 
 ### 9.2 查看所有 collection
@@ -724,7 +724,7 @@ curl http://localhost:8001/api/v1/collections
 进入应用容器：
 
 ```bash
-docker exec -it echomind-app bash
+docker exec -it relaydesk-app bash
 ```
 
 在容器里执行：
@@ -755,7 +755,7 @@ collections:
 ### 9.4 查看 `knowledge_base` 文档内容
 
 ```bash
-docker exec -it echomind-app bash
+docker exec -it relaydesk-app bash
 ```
 
 执行：
@@ -779,7 +779,7 @@ PY
 ### 9.5 查询 `knowledge_base`
 
 ```bash
-docker exec -it echomind-app bash
+docker exec -it relaydesk-app bash
 ```
 
 执行：
@@ -822,7 +822,7 @@ curl -X POST http://localhost:8000/chat \
 等待几秒后查看：
 
 ```bash
-docker exec -it echomind-app bash
+docker exec -it relaydesk-app bash
 ```
 
 ```bash
@@ -862,7 +862,7 @@ done
 查看情景记忆：
 
 ```bash
-docker exec -it echomind-app bash
+docker exec -it relaydesk-app bash
 ```
 
 ```bash
@@ -897,13 +897,13 @@ volumes:
 
 ```bash
 docker volume ls | grep chromadb
-docker volume inspect echomind_chromadb-data
+docker volume inspect relaydesk_chromadb-data
 ```
 
 查看容器内数据目录：
 
 ```bash
-docker exec -it echomind-chromadb sh
+docker exec -it relaydesk-chromadb sh
 ls -lah /chroma/chroma
 find /chroma/chroma -maxdepth 2 -type f | head
 ```
@@ -916,14 +916,14 @@ find /chroma/chroma -maxdepth 2 -type f | head
 
 ```bash
 docker compose down
-docker volume rm echomind_chromadb-data
+docker volume rm relaydesk_chromadb-data
 docker compose up -d --build
 ```
 
 如果只想删除某个 collection，可以用 Python 客户端：
 
 ```bash
-docker exec -it echomind-app bash
+docker exec -it relaydesk-app bash
 ```
 
 ```bash
@@ -943,13 +943,13 @@ PY
 Redis 容器名：
 
 ```text
-echomind-redis
+relaydesk-redis
 ```
 
 进入 Redis：
 
 ```bash
-docker exec -it echomind-redis redis-cli -a echomind123
+docker exec -it relaydesk-redis redis-cli -a relaydesk123
 ```
 
 查看 key：
@@ -1019,7 +1019,7 @@ conv_id = 5a076f2b-b607-4339-9e9f-f0399862d366
 进入 Redis：
 
 ```bash
-docker exec -it echomind-redis redis-cli -a echomind123
+docker exec -it relaydesk-redis redis-cli -a relaydesk123
 ```
 
 查询摘要：
@@ -1031,7 +1031,7 @@ GET summary:cli_user:5a076f2b-b607-4339-9e9f-f0399862d366
 一条命令快速查看：
 
 ```bash
-docker exec -it echomind-redis redis-cli -a echomind123 \
+docker exec -it relaydesk-redis redis-cli -a relaydesk123 \
   GET summary:cli_user:5a076f2b-b607-4339-9e9f-f0399862d366
 ```
 
@@ -1046,7 +1046,7 @@ LRANGE wm:cli_user:5a076f2b-b607-4339-9e9f-f0399862d366 0 -1
 一条命令快速查看：
 
 ```bash
-docker exec -it echomind-redis redis-cli -a echomind123 \
+docker exec -it relaydesk-redis redis-cli -a relaydesk123 \
   LRANGE wm:cli_user:5a076f2b-b607-4339-9e9f-f0399862d366 0 -1
 ```
 
@@ -1061,13 +1061,13 @@ docker exec -it echomind-redis redis-cli -a echomind123 \
 如果是全栈部署，应用容器名通常是：
 
 ```text
-echomind-app
+relaydesk-app
 ```
 
 进入应用容器：
 
 ```bash
-docker exec -it echomind-app bash
+docker exec -it relaydesk-app bash
 ```
 
 如果你是用 `docker run --rm` 跑 CLI，容器名可能是随机的。先查看：
@@ -1122,7 +1122,7 @@ PY
 ### 11.4 如果只想看某个用户的所有情景记忆
 
 ```bash
-docker exec -it echomind-app bash
+docker exec -it relaydesk-app bash
 ```
 
 ```bash
@@ -1254,7 +1254,7 @@ docker compose stop
 重启服务：
 
 ```bash
-docker compose restart echomind
+docker compose restart relaydesk
 ```
 
 停止并删除容器，但保留数据卷：
@@ -1282,7 +1282,7 @@ docker compose up -d --build
 查看应用日志：
 
 ```bash
-docker compose logs -f echomind
+docker compose logs -f relaydesk
 ```
 
 重点检查：
@@ -1305,7 +1305,7 @@ curl http://localhost:8001/api/v1/heartbeat
 应用容器内测试：
 
 ```bash
-docker exec -it echomind-app bash
+docker exec -it relaydesk-app bash
 python - <<'PY'
 import chromadb
 client = chromadb.HttpClient(host="chromadb", port=8000)
@@ -1318,13 +1318,13 @@ PY
 确认 `.env` 和 `docker-compose.yml` 中使用的密码一致。默认密码是：
 
 ```text
-echomind123
+relaydesk123
 ```
 
 测试连接：
 
 ```bash
-docker exec -it echomind-redis redis-cli -a echomind123 ping
+docker exec -it relaydesk-redis redis-cli -a relaydesk123 ping
 ```
 
 ### 15.4 `/search` 没有结果
@@ -1354,7 +1354,7 @@ curl -X POST "http://localhost:8000/search?query=API如何接入&top_k=3"
 
 1. 先调用 `/chat`，使用固定 `user_id`
 2. 等待几秒
-3. 查看 `docker compose logs -f echomind` 是否出现 `用户画像已更新`
+3. 查看 `docker compose logs -f relaydesk` 是否出现 `用户画像已更新`
 4. 使用第 8.6 节的 Python 脚本查询 `user_profile`
 
 ### 15.6 情景记忆查不到
@@ -1391,7 +1391,7 @@ curl -X POST http://localhost:8000/knowledge/upload \
   -F "file=@data/demo_docs/sample_knowledge.json"
 
 # 6. 检索
-curl -X POST "http://localhost:8000/search?query=EchoMind如何接入API&top_k=3"
+curl -X POST "http://localhost:8000/search?query=RelayDesk如何接入API&top_k=3"
 
 # 7. 监控
 curl http://localhost:8000/monitor

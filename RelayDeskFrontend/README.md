@@ -1,11 +1,11 @@
-# EchoMind 企业统一服务台前端
+# RelayDesk 企业统一服务台前端
 
-独立 Vue 前端项目，用于演示 EchoMind 企业统一服务台的综合咨询、技术支持、账户服务、费用结算和人工升级能力，并可同时连接兼容的 Python 与 Java 后端。
+独立 Vue 前端项目，用于演示 RelayDesk 企业统一服务台的综合咨询、技术支持、账户服务、费用结算和人工升级能力，并可同时连接兼容的 Python 与 Java 后端。
 
 项目目录：
 
 ```text
-/Users/xiao_xiong/Desktop/code/EchoMindFrontend
+/Users/xiao_xiong/Desktop/code/RelayDeskFrontend
 ```
 
 ## 功能

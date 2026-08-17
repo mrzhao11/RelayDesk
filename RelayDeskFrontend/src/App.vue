@@ -4,7 +4,7 @@
       <section class="brand">
         <div class="brand-mark">EM</div>
         <div>
-          <h1>EchoMind 企业统一服务台</h1>
+          <h1>RelayDesk 企业统一服务台</h1>
           <p>多 Agent 企业服务请求协同</p>
         </div>
       </section>
@@ -74,7 +74,7 @@
     <section class="workspace">
       <header class="workspace-header">
         <div>
-          <span class="eyebrow">EchoMind Service Desk</span>
+          <span class="eyebrow">RelayDesk Service Desk</span>
           <h2>企业服务对话</h2>
           <p>{{ currentBackend.baseUrl }}</p>
         </div>
@@ -94,7 +94,7 @@
             <p>{{ item.content }}</p>
           </article>
           <div v-if="messages.length === 0" class="empty-state">
-            <h3>欢迎使用 EchoMind 企业统一服务台</h3>
+            <h3>欢迎使用 RelayDesk 企业统一服务台</h3>
             <p>你可以咨询通用服务、账户问题、技术故障、费用结算或申请人工协助。</p>
             <div class="quick-prompts">
               <button v-for="item in exampleQuestions" :key="item" type="button" @click="draft = item">{{ item }}</button>

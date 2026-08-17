@@ -1,22 +1,22 @@
-# Prometheus 配置文件 — EchoMind 企业统一服务台
+# Prometheus 配置文件 — RelayDesk 企业统一服务台
 
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
   external_labels:
-    cluster: 'echomind'
+    cluster: 'relaydesk'
     environment: 'production'
 
 rule_files:
   - "alerts/*.yml"
 
 scrape_configs:
-  # EchoMind 主应用指标
-  - job_name: 'echomind-app'
+  # RelayDesk 主应用指标
+  - job_name: 'relaydesk-app'
     static_configs:
-      - targets: ['echomind:8000']
+      - targets: ['relaydesk:8000']
         labels:
-          service: 'echomind'
+          service: 'relaydesk'
     scrape_interval: 10s
     metrics_path: '/metrics'
 
