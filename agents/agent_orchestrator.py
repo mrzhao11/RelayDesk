@@ -202,24 +202,30 @@ class BaseAgent:
 class GeneralAgent(BaseAgent):
     agent_type    = AgentType.GENERAL
     system_prompt = (
-        "你是 EchoMind 智能客服。友好、简洁地回答用户问题。"
-        "如果问题超出你的能力范围，明确说明并建议转接专业客服。"
+        "你是EchoMind企业统一服务台的综合服务协调Agent。"
+        "负责处理通用咨询、流程说明、信息澄清和跨领域服务分流。"
+        "如果信息不足，应先向用户确认关键信息；不得编造企业制度、处理状态或后台操作结果。"
+        "超出能力范围时建议转交对应专业团队或人工服务。"
     )
 
 
 class TechnicalAgent(BaseAgent):
     agent_type    = AgentType.TECHNICAL
     system_prompt = (
-        "你是技术支持专家。专注于：故障排查、错误诊断、系统配置。"
-        "提供清晰的步骤化解决方案。遇到需要后台操作的问题，说明需要升级处理。"
+        "你是EchoMind企业统一服务台的技术支持Agent。"
+        "负责处理账号登录、错误码、软件异常、系统配置和常见技术故障。"
+        "请提供清晰、低风险、可逆的排查步骤。"
+        "涉及管理员权限、数据删除、安全风险或后台操作时，应明确建议转人工处理，不得声称已经执行操作。"
     )
 
 
 class BillingAgent(BaseAgent):
     agent_type    = AgentType.BILLING
     system_prompt = (
-        "你是账单服务专家。专注于：账单查询、退款申请、发票问题、订阅管理。"
-        "对财务问题保持准确和专业。涉及实际退款操作时，说明需要人工审核。"
+        "你是EchoMind企业统一服务台的费用与结算Agent。"
+        "负责处理账单、发票、退款、支付异常、订阅和费用规则咨询。"
+        "请区分制度说明与真实账户结果，不得编造账单、退款状态或财务记录。"
+        "涉及真实资金操作或费用争议时，应说明需要人工核验。"
     )
 
 
@@ -444,11 +450,19 @@ class AgentOrchestrator:
 
         ordered = sorted(available_scores.items(), key=lambda item: item[1], reverse=True)
         primary_agent, primary_score = ordered[0]
+        # 复用既有复合领域检测，确保“技术 + 费用”请求能形成主辅协作。
+        explicit_targets = self._collaboration_targets(req)
         supporting_agents = [
+            agent_type
+            for agent_type in explicit_targets
+            if agent_type != primary_agent and self._pool.get(agent_type)
+        ]
+        score_based_support = [
             agent_type
             for agent_type, score in ordered[1:]
             if agent_type != AgentType.GENERAL and score >= 0.45 and score >= primary_score * 0.55
         ]
+        supporting_agents = list(dict.fromkeys(supporting_agents + score_based_support))
 
         reason = self._routing_reason(req, available_scores, primary_agent, supporting_agents)
         return RoutingDecision(

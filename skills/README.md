@@ -1,13 +1,13 @@
 # EchoMind Skills 文档
 
-EchoMind 启动时会从 `ECHOMIND_SKILLS_DIR` 读取 Skills，并在匹配用户请求时注入到对应 Agent 的 system prompt。Skills 适合维护业务处理规范、客服话术、技术排障 SOP、账单审核边界、升级规则和禁止事项。
+EchoMind 启动时会从 `ECHOMIND_SKILLS_DIR` 读取 Skills，并在匹配用户请求时注入到对应 Agent 的 system prompt。Skills 适合维护企业服务规范、沟通要求、技术排障 SOP、费用核验边界、升级规则和禁止事项。
 
 当前内置三类 Skills：
 
 ```text
-skills/general_customer_service/SKILL.md  # 通用客服：接待、澄清、分流、投诉和转人工
-skills/technical_support/SKILL.md         # 技术支持：故障排查、接口错误、部署配置和安全边界
-skills/billing_support/SKILL.md           # 账单服务：扣款、退款、发票、订阅和财务审核
+skills/general_customer_service/SKILL.md  # 综合服务：咨询、澄清、流程说明、分流和人工升级
+skills/technical_support/SKILL.md         # 技术支持：企业账号、权限错误、软件故障和安全边界
+skills/billing_support/SKILL.md           # 费用结算：费用、支付、退款、发票、订阅和财务核验
 ```
 
 ## Skill 文件格式
@@ -41,7 +41,7 @@ enabled: true
 ## 编写要求
 
 - 重要规则放在文档前半部分，因为过长内容会按 prompt 预算截断。
-- 一类 Skill 只描述一类职责，不要把技术、账单、通用客服规则混在一个文件里。
+- 一类 Skill 只描述一类职责，不要把技术、费用结算、综合服务规则混在一个文件里。
 - 必须包含“角色定位”“处理流程”“升级条件”“禁止事项”等稳定章节。
 - 对用户隐私、支付、密码、验证码、API Key、Token 等敏感信息必须写明禁止收集或禁止公开。
 - 对无法保证的事项使用保守措辞，例如“通常”“预计”“需要核验后确认”。

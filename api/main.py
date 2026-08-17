@@ -1,5 +1,5 @@
 """
-EchoMind 智能客服系统 — FastAPI 入口
+EchoMind 企业统一服务台 — FastAPI 入口
 
 启动时打印小熊饼干图案。
 所有核心组件在 lifespan 中初始化，通过环境变量配置。
@@ -37,7 +37,7 @@ BANNER = r"""
     ʕ•ᴥ•ʔ  ʕ•ᴥ•ʔ  ʕ•ᴥ•ʔ
    ╔══════════════════════╗
    ║   EchoMind  v2.0     ║
-   ║   智能客服 AI 系统    ║
+   ║    企业统一服务台     ║
    ╚══════════════════════╝
     ʕ•ᴥ•ʔ  ʕ•ᴥ•ʔ  ʕ•ᴥ•ʔ
 """
@@ -116,7 +116,7 @@ async def lifespan(app: FastAPI):
         model=cfg["model"],
     )
 
-    # MCP 工具管理器 + RAG 知识库（基于 ChromaDB 的真实检索）
+    # 内部工具管理器 + RAG 知识库（基于 ChromaDB 的真实检索）
     _tool_manager = MCPToolManager(
         api_key=cfg["api_key"],
         base_url=cfg.get("base_url"),
@@ -188,7 +188,7 @@ async def lifespan(app: FastAPI):
 
 # ── FastAPI ───────────────────────────────────────────────────────────────────
 app = FastAPI(
-    title="EchoMind 智能客服",
+    title="EchoMind 企业统一服务台",
     version="2.0.0",
     lifespan=lifespan,
     docs_url="/docs",
@@ -332,7 +332,7 @@ async def _build_knowledge_context(message: str, intent=None, top_k: int = 3) ->
     """
     为 /chat 主链路构建 RAG 知识上下文。
 
-    这里复用 MCPToolManager 的查询改写、并行召回、重排、fallback 能力。
+    这里复用内部工具管理器的查询改写、并行召回、重排、fallback 能力。
     """
     if _tool_manager is None:
         return "", False
@@ -348,6 +348,9 @@ async def _build_knowledge_context(message: str, intent=None, top_k: int = 3) ->
         for i, item in enumerate(result.data[:top_k], start=1):
             if not isinstance(item, dict):
                 continue
+            # fallback 只表示检索工具已降级，不是真实知识命中，不能注入 Agent。
+            if item.get("fallback") is True:
+                continue
             title = str(item.get("title", "未命名文档"))
             content = str(item.get("content", "")).strip()
             score = item.get("score", "")
@@ -358,7 +361,7 @@ async def _build_knowledge_context(message: str, intent=None, top_k: int = 3) ->
 
         if not used:
             return "", False
-        parts.append("请优先依据以上知识库内容回答；如果知识库内容不足，再结合通用客服能力说明。")
+        parts.append("请优先依据以上知识库内容回答；如果知识库内容不足，再结合企业统一服务能力说明。")
         return "\n".join(parts), True
     except Exception as ex:
         logger.warning(f"构建知识库上下文失败: {ex}")
@@ -408,7 +411,7 @@ async def prometheus_metrics():
 async def search(query: str, top_k: int = 5):
     """
     演示检索优化链路：查询改写 → 并行召回 → 重排 → Top-K。
-    展示 MCP 工具调用的核心亮点。
+    展示内部知识库工具的检索优化链路。
     """
     if _tool_manager is None:
         raise HTTPException(503, "服务未就绪")
@@ -460,7 +463,7 @@ async def add_knowledge(body: BatchDocInput):
     {
       "documents": [
         {"title": "退款政策", "content": "用户在购买后 7 天内可以申请无理由退款..."},
-        {"title": "配送说明", "content": "标准配送 3-5 个工作日..."}
+        {"title": "权限申请说明（演示）", "content": "适用场景、处理步骤和人工升级条件..."}
       ]
     }
     ```

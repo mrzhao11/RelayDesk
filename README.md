@@ -2,7 +2,18 @@
 
 本文档说明 EchoMind 的部署、启动、API 调用、知识库使用、ChromaDB 数据查看、监控评测和常见排障。
 
-EchoMind 是一个企业级智能客服系统，核心链路为：
+EchoMind 是一个面向企业统一服务场景的多 Agent 请求协同系统，通过细粒度意图识别、按需 RAG、结构化主辅 Agent 路由、动态 Skills 和分层记忆，为用户提供综合咨询、技术支持、账户服务、费用结算和人工升级。
+
+现有 Agent 对外角色如下，内部枚举和值保持兼容：
+
+| 现有 Agent | 企业统一服务台角色 | 处理内容 |
+|------------|--------------------|----------|
+| `GeneralAgent` | 综合服务协调Agent | 通用咨询、流程说明、信息澄清、服务分流 |
+| `TechnicalAgent` | 技术支持Agent | 登录失败、错误码、软件异常、系统故障 |
+| `BillingAgent` | 费用与结算Agent | 账单、发票、退款、支付异常、订阅费用 |
+| `ESCALATION` | 人工升级通道 | 投诉、紧急问题、低置信度或高风险请求 |
+
+核心链路为：
 
 ```text
 用户请求
@@ -22,11 +33,10 @@ EchoMind/
 ├── core/intent_recognizer.py      # 三路融合意图识别
 ├── agents/agent_orchestrator.py   # 多 Agent 路由编排
 ├── memory/conversation_memory.py  # Redis + ChromaDB 记忆管理
-├── mcp/tool_manager.py            # MCP 工具调用、查询改写、重排、熔断、缓存、降级
+├── mcp/tool_manager.py            # 内部工具注册与可靠性治理、查询改写、重排、熔断、缓存、降级
 ├── mcp/knowledge_base.py          # ChromaDB RAG 知识库
 ├── monitor/performance_monitor.py # Agent/工具在线监控
 ├── evaluation/evaluator.py        # 端到端评测
-├── data/demo_docs/                # 演示知识库文档
 ├── docker-compose.yml             # Docker 全栈编排
 ├── Dockerfile
 ├── requirements.txt
@@ -253,25 +263,27 @@ ECHOMIND_SKILLS_MAX_PROMPT_CHARS=5000
 推荐结构：
 
 ```text
-skills/refund/SKILL.md
-skills/customer_support/SKILL.md
+skills/general_customer_service/SKILL.md
+skills/technical_support/SKILL.md
+skills/billing_support/SKILL.md
 ```
 
 `SKILL.md` 示例：
 
 ```markdown
 ---
-name: 退款处理流程
-description: 退款场景的客服处理规则
-keywords: 退款,退费,refund
-agents: billing,general
+name: 企业综合服务接待规范
+description: 通用咨询、流程说明、信息澄清和服务分流规范
+keywords: 咨询,流程,申请,投诉,人工
+agents: general
 enabled: true
 ---
 
-# 退款处理流程
+# 企业综合服务接待规范
 
-- 先确认订单号和支付方式。
-- 涉及实际退款操作时转人工审核。
+- 信息不足时先确认关键信息。
+- 不得编造企业制度、审批状态或后台操作结果。
+- 涉及真实权限、资金或高风险请求时转人工核验。
 ```
 
 查看加载结果：
@@ -346,7 +358,7 @@ curl http://localhost:8000/health
 
 ### 5.5 `/search`
 
-用途：测试 MCP 工具调用和 RAG 检索优化。
+用途：测试内部知识库工具和 RAG 检索优化。EchoMind 实现了内部工具注册与可靠性治理框架，目前接入 `knowledge_search`，并支持缓存、超时、熔断、fallback、查询改写和结果重排；当前不属于完整标准 MCP Server 实现。
 
 Query 参数：
 
@@ -371,8 +383,8 @@ curl -X POST "http://localhost:8000/search?query=退款多久到账&top_k=3"
 {
   "documents": [
     {
-      "title": "退款政策",
-      "content": "用户在购买后 7 天内可以申请无理由退款..."
+      "title": "企业账号密码重置（演示）",
+      "content": "适用场景：忘记企业账号密码。处理步骤：通过企业身份验证入口完成重置。人工升级条件：无法使用登记的验证方式。"
     }
   ]
 }
@@ -452,7 +464,7 @@ curl -X POST http://localhost:8000/eval/run
 curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
   -d '{
-    "message": "我的订单什么时候到？",
+    "message": "企业统一服务台可以处理哪些问题？",
     "user_id": "user_001",
     "conv_id": "session_001"
   }'
@@ -463,7 +475,7 @@ curl -X POST http://localhost:8000/chat \
 ```json
 {
   "conv_id": "session_001",
-  "response": "请提供订单号，我可以帮您查询订单状态和物流进度。",
+  "response": "我可以协助通用咨询、账户问题、技术故障、费用结算和人工升级。涉及真实后台结果时需要对应系统或人工核验。",
   "intent": "query",
   "agent_type": "general",
   "escalated": false,
@@ -491,7 +503,7 @@ curl -X POST http://localhost:8000/chat \
 curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
   -d '{
-    "message": "订单号是 A123456",
+    "message": "我需要申请企业账号权限",
     "user_id": "user_001",
     "conv_id": "session_001"
   }'
@@ -549,7 +561,7 @@ EchoMind 的知识库由 `mcp/knowledge_base.py` 管理，底层使用 ChromaDB 
 knowledge_base
 ```
 
-首次启动时，如果知识库为空，会自动导入默认客服文档，包括退款政策、订单查询、账户安全、技术故障排查、会员积分、配送说明。
+首次启动时，如果知识库为空或仍是片段不足的旧版演示库，会补充 20 篇企业统一服务台演示知识。内容覆盖综合服务、账号与技术、费用与结算；每篇都明确适用场景、处理步骤、人工升级条件和“非真实企业制度”边界。长文档继续按约 500 字切片。
 
 ### 7.1 查看知识库统计
 
@@ -561,7 +573,7 @@ curl http://localhost:8000/knowledge/stats
 
 ```json
 {
-  "total_chunks": 18
+  "total_chunks": 20
 }
 ```
 
@@ -573,12 +585,12 @@ curl -X POST http://localhost:8000/knowledge/add \
   -d '{
     "documents": [
       {
-        "title": "退换货政策",
-        "content": "用户在购买后 7 天内可以申请无理由退货，审核通过后 5-7 个工作日退款。"
+        "title": "VPN 连接说明（演示）",
+        "content": "适用场景：企业 VPN 无法连接。处理步骤：检查网络、客户端状态和设备时间。人工升级条件：证书告警或多人同时断连。"
       },
       {
-        "title": "会员权益",
-        "content": "金卡会员享受 9 折优惠，生日当月可获得双倍积分。"
+        "title": "费用核验流程（演示）",
+        "content": "适用场景：用户对费用记录存在争议。处理步骤：准备脱敏交易信息并提交人工财务核验。"
       }
     ]
   }'
@@ -804,7 +816,7 @@ PY
 ```bash
 curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
-  -d '{"message": "我经常咨询会员积分和退款问题，回答请简洁一点", "user_id": "profile_user", "conv_id": "profile_session"}'
+  -d '{"message": "我经常咨询企业账号和费用问题，回答请简洁一点", "user_id": "profile_user", "conv_id": "profile_session"}'
 ```
 
 等待几秒后查看：
