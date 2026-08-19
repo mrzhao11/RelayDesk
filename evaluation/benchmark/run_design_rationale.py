@@ -125,6 +125,81 @@ def envelope(status: str, explanation: str, method: str, result: Any) -> Dict[st
     }
 
 
+class UsageTrackingClient:
+    """Small AsyncAnthropic proxy that records auditable call and token totals."""
+
+    def __init__(self, client: Any, min_max_tokens: int = 0):
+        self._client = client
+        self._min_max_tokens = max(0, min_max_tokens)
+        self.messages = self
+        self.call_count = 0
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self.latencies_ms: List[float] = []
+        self.empty_text_response_count = 0
+        self.stop_reason_counts: Dict[str, int] = defaultdict(int)
+
+    async def create(self, **kwargs: Any) -> Any:
+        if self._min_max_tokens:
+            kwargs["max_tokens"] = max(int(kwargs.get("max_tokens", 0) or 0), self._min_max_tokens)
+        started = time.perf_counter()
+        response = await self._client.messages.create(**kwargs)
+        self.latencies_ms.append((time.perf_counter() - started) * 1000)
+        self.call_count += 1
+        usage = getattr(response, "usage", None)
+        self.input_tokens += int(getattr(usage, "input_tokens", 0) or 0)
+        self.output_tokens += int(getattr(usage, "output_tokens", 0) or 0)
+        stop_reason = str(getattr(response, "stop_reason", None) or "unknown")
+        self.stop_reason_counts[stop_reason] += 1
+        from core.llm_utils import extract_text_content
+        if not extract_text_content(getattr(response, "content", [])):
+            self.empty_text_response_count += 1
+        return response
+
+    def snapshot(self) -> Dict[str, Any]:
+        return {
+            "call_count": self.call_count,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "empty_text_response_count": self.empty_text_response_count,
+            "stop_reason_counts": dict(self.stop_reason_counts),
+            "p50_call_latency_ms": percentile(self.latencies_ms, 0.5),
+            "p95_call_latency_ms": percentile(self.latencies_ms, 0.95),
+        }
+
+    def delta(self, before: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "call_count": self.call_count - int(before.get("call_count", 0)),
+            "input_tokens": self.input_tokens - int(before.get("input_tokens", 0)),
+            "output_tokens": self.output_tokens - int(before.get("output_tokens", 0)),
+            "empty_text_response_count": self.empty_text_response_count - int(before.get("empty_text_response_count", 0)),
+            "stop_reason_counts": {
+                reason: count - int((before.get("stop_reason_counts") or {}).get(reason, 0))
+                for reason, count in self.stop_reason_counts.items()
+                if count - int((before.get("stop_reason_counts") or {}).get(reason, 0))
+            },
+        }
+
+
+def llm_settings() -> Tuple[str, Optional[str], str]:
+    values = dotenv_values(ROOT / ".env") if (ROOT / ".env").exists() else {}
+    return (
+        values.get("ANTHROPIC_API_KEY") or "",
+        values.get("ANTHROPIC_BASE_URL") or None,
+        values.get("ANTHROPIC_MODEL") or "claude-3-5-sonnet-20241022",
+    )
+
+
+def tracked_llm_client(min_max_tokens: int = 0) -> UsageTrackingClient:
+    from anthropic import AsyncAnthropic
+
+    key, base_url, _ = llm_settings()
+    kwargs: Dict[str, Any] = {"api_key": key, "max_retries": 0, "timeout": 45.0}
+    if base_url:
+        kwargs["base_url"] = base_url
+    return UsageTrackingClient(AsyncAnthropic(**kwargs), min_max_tokens=min_max_tokens)
+
+
 def macro_classification_metrics(rows: Sequence[Tuple[str, str, str]]) -> Dict[str, Any]:
     """rows: (id, gold, predicted)。"""
     labels = sorted({gold for _, gold, _ in rows} | {pred for _, _, pred in rows})
@@ -293,6 +368,15 @@ async def intent_benchmark(output_dir: Path, llm_probe: Dict[str, Any]) -> List[
             return {"samples": sample, "llm": llm, "pattern": pattern, "embedding": embedding}
 
         components = await asyncio.gather(*(collect(sample) for sample in dataset))
+        llm_failed_count = sum(1 for parts in components if parts["llm"].get("failed"))
+        llm_success_count = len(components) - llm_failed_count
+        supplementary["llm_structured_output"] = {
+            "call_count": len(components),
+            "successful_parse_count": llm_success_count,
+            "failed_parse_count": llm_failed_count,
+            "success_rate": round(llm_success_count / len(components), 4) if components else None,
+            "interpretation": "Failed structured outputs become OTHER with zero confidence in the production recognizer.",
+        }
 
         def fuse(parts: Dict[str, Any], weights: Tuple[float, float, float]) -> str:
             scores: Dict[IntentCategory, float] = defaultdict(float)
@@ -328,7 +412,7 @@ async def intent_benchmark(output_dir: Path, llm_probe: Dict[str, Any]) -> List[
                     rows.append((sample["id"], sample["gold_intent"], pred))
             predictions_by_variant[name] = predictions
             ablations[name] = {
-                "status": "EXECUTED",
+                "status": "EXECUTED" if llm_failed_count == 0 else "PARTIALLY EXECUTED",
                 "weights": {"LLM": weights[0], "Embedding": weights[1], "Pattern": weights[2]},
                 "metrics": macro_classification_metrics(rows),
                 "llm_call_count": len(dataset),
@@ -379,8 +463,8 @@ async def intent_benchmark(output_dir: Path, llm_probe: Dict[str, Any]) -> List[
         }
 
     intent_payload = envelope(
-        "PARTIALLY EXECUTED" if not llm_probe.get("available") else "EXECUTED",
-        "Component diagnostics were executed. LLM-inclusive primary ablations depend on the LLM probe.",
+        "PARTIALLY EXECUTED" if not llm_probe.get("available") or supplementary.get("llm_structured_output", {}).get("failed_parse_count", 0) else "EXECUTED",
+        "Component diagnostics and LLM-inclusive ablations were attempted; structured-output failures are counted and retained as runtime failures.",
         "Uses one Chinese-language test corpus; ambiguous samples are excluded from primary metrics; adapters do not modify the production recognizer.",
         {"llm_probe": llm_probe, "primary_ablations": ablations, "supplementary_component_diagnostics": supplementary, "observed_bad_cases": bad_cases},
     )
@@ -429,10 +513,11 @@ def retrieval_metrics(cases: Sequence[Dict[str, Any]], latencies: Sequence[float
 
 async def rag_benchmark(output_dir: Path, llm_probe: Dict[str, Any]) -> List[Dict[str, Any]]:
     from mcp.knowledge_base import KnowledgeBase
+    from mcp.tool_manager import MCPToolManager
 
     dataset = load_json(DATA_DIR / "rag_design_rationale.json")["samples"]
-    latencies: List[float] = []
-    cases: List[Dict[str, Any]] = []
+    variants: Dict[str, Any] = {}
+    rag_bad_cases: List[Dict[str, Any]] = []
     error: Optional[str] = None
     os.environ.setdefault("TMPDIR", "/tmp")
     os.environ.setdefault("PYTHONPYCACHEPREFIX", "/tmp/relaydesk-design-pycache")
@@ -440,11 +525,14 @@ async def rag_benchmark(output_dir: Path, llm_probe: Dict[str, Any]) -> List[Dic
         with tempfile.TemporaryDirectory(prefix="relaydesk-design-kb-") as directory:
             kb = KnowledgeBase(chroma_host="127.0.0.1", chroma_port=65535, chroma_path=directory)
             chunk_count = kb.doc_count
+
+            direct_cases: List[Dict[str, Any]] = []
+            direct_latencies: List[float] = []
             for sample in dataset:
                 started = time.perf_counter()
                 items = await kb.search_async(sample["query"], top_k=5)
-                latencies.append((time.perf_counter() - started) * 1000)
-                cases.append({
+                direct_latencies.append((time.perf_counter() - started) * 1000)
+                direct_cases.append({
                     "id": sample["id"],
                     "query": sample["query"],
                     "query_type": sample["query_type"],
@@ -452,51 +540,213 @@ async def rag_benchmark(output_dir: Path, llm_probe: Dict[str, Any]) -> List[Dic
                     "retrieved_titles": [item["title"] for item in items],
                     "retrieved_items": items,
                 })
+
+            variants["V0 Direct Retrieval"] = {
+                "status": "EXECUTED",
+                "knowledge_chunk_count": chunk_count,
+                "metrics": retrieval_metrics(direct_cases, direct_latencies),
+                "llm_calls_per_query": 0.0,
+                "token_usage": {"input_tokens": 0, "output_tokens": 0},
+                "per_sample_results": direct_cases,
+            }
+
+            if llm_probe.get("available"):
+                key, base_url, model = llm_settings()
+                manager = MCPToolManager(key, base_url=base_url, model=model)
+                tracker = tracked_llm_client()
+                manager._client = tracker
+                semaphore = asyncio.Semaphore(4)
+
+                async def rewrite_one(sample: Dict[str, Any]) -> Tuple[str, List[str], float]:
+                    async with semaphore:
+                        started = time.perf_counter()
+                        queries = await manager.rewrite_query(sample["query"], n=3)
+                        return sample["id"], queries, (time.perf_counter() - started) * 1000
+
+                before_rewrite = tracker.snapshot()
+                rewrite_rows = await asyncio.gather(*(rewrite_one(sample) for sample in dataset))
+                rewrite_usage = tracker.delta(before_rewrite)
+                rewrites = {item_id: queries for item_id, queries, _ in rewrite_rows}
+                rewrite_ms = {item_id: latency for item_id, _, latency in rewrite_rows}
+                rewrite_success_count = sum(1 for _, queries, _ in rewrite_rows if len(queries) > 1)
+
+                async def recall_queries(queries: Sequence[str], top_k: int = 5) -> Tuple[List[Dict[str, Any]], float]:
+                    started = time.perf_counter()
+                    groups = await asyncio.gather(*(kb.search_async(query, top_k=top_k) for query in queries))
+                    merged: Dict[Tuple[str, Any, str], Dict[str, Any]] = {}
+                    for group in groups:
+                        for item in group:
+                            stable_key = (item.get("title", ""), item.get("chunk", 0), item.get("content", ""))
+                            if stable_key not in merged or float(item.get("score", -999)) > float(merged[stable_key].get("score", -999)):
+                                merged[stable_key] = item
+                    ordered = sorted(merged.values(), key=lambda item: float(item.get("score", -999)), reverse=True)
+                    return ordered, (time.perf_counter() - started) * 1000
+
+                v1_cases: List[Dict[str, Any]] = []
+                v1_latencies: List[float] = []
+                multi_candidates: Dict[str, List[Dict[str, Any]]] = {}
+                multi_recall_ms: Dict[str, float] = {}
+                for sample in dataset:
+                    items, recall_ms = await recall_queries(rewrites[sample["id"]], top_k=5)
+                    multi_candidates[sample["id"]] = items
+                    multi_recall_ms[sample["id"]] = recall_ms
+                    top_items = items[:5]
+                    total_ms = rewrite_ms[sample["id"]] + recall_ms
+                    v1_latencies.append(total_ms)
+                    v1_cases.append({
+                        "id": sample["id"], "query": sample["query"], "query_type": sample["query_type"],
+                        "relevant_titles": sample["relevant_titles"], "rewrite_queries": rewrites[sample["id"]],
+                        "retrieved_titles": [item["title"] for item in top_items], "retrieved_items": top_items,
+                        "latency_ms": round(total_ms, 3),
+                    })
+                variants["V1 Query Rewrite (No Rerank)"] = {
+                    "status": "EXECUTED" if rewrite_success_count == len(dataset) else "PARTIALLY EXECUTED",
+                    "metrics": retrieval_metrics(v1_cases, v1_latencies),
+                    "llm_calls_per_query": round(rewrite_usage["call_count"] / len(dataset), 4),
+                    "token_usage": rewrite_usage,
+                    "rewrite_success_count": rewrite_success_count,
+                    "rewrite_fallback_count": len(dataset) - rewrite_success_count,
+                    "per_sample_results": v1_cases,
+                }
+
+                async def rerank_one(sample: Dict[str, Any], items: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str, Any]], float]:
+                    async with semaphore:
+                        started = time.perf_counter()
+                        reranked = await manager._rerank(sample["query"], items, 5)
+                        return sample["id"], reranked, (time.perf_counter() - started) * 1000
+
+                before_v2 = tracker.snapshot()
+                rerank_rows = await asyncio.gather(*(
+                    rerank_one(sample, multi_candidates[sample["id"]]) for sample in dataset
+                ))
+                v2_rerank_usage = tracker.delta(before_v2)
+                reranked_by_id = {item_id: items for item_id, items, _ in rerank_rows}
+                rerank_ms = {item_id: latency for item_id, _, latency in rerank_rows}
+                v2_cases: List[Dict[str, Any]] = []
+                v2_latencies: List[float] = []
+                for sample in dataset:
+                    item_id = sample["id"]
+                    items = reranked_by_id[item_id]
+                    total_ms = rewrite_ms[item_id] + multi_recall_ms[item_id] + rerank_ms[item_id]
+                    v2_latencies.append(total_ms)
+                    v2_cases.append({
+                        "id": item_id, "query": sample["query"], "query_type": sample["query_type"],
+                        "relevant_titles": sample["relevant_titles"], "rewrite_queries": rewrites[item_id],
+                        "candidate_titles_before_rerank": [item["title"] for item in multi_candidates[item_id]],
+                        "retrieved_titles": [item["title"] for item in items], "retrieved_items": items,
+                        "latency_ms": round(total_ms, 3),
+                    })
+                v2_usage = {
+                    "call_count": rewrite_usage["call_count"] + v2_rerank_usage["call_count"],
+                    "input_tokens": rewrite_usage["input_tokens"] + v2_rerank_usage["input_tokens"],
+                    "output_tokens": rewrite_usage["output_tokens"] + v2_rerank_usage["output_tokens"],
+                    "empty_text_response_count": rewrite_usage["empty_text_response_count"] + v2_rerank_usage["empty_text_response_count"],
+                    "stop_reason_counts": {
+                        reason: rewrite_usage.get("stop_reason_counts", {}).get(reason, 0) + v2_rerank_usage.get("stop_reason_counts", {}).get(reason, 0)
+                        for reason in set(rewrite_usage.get("stop_reason_counts", {})) | set(v2_rerank_usage.get("stop_reason_counts", {}))
+                    },
+                }
+                variants["V2 Current Rewrite + Rerank"] = {
+                    "status": "EXECUTED" if rewrite_success_count == len(dataset) and v2_usage["empty_text_response_count"] == 0 else "PARTIALLY EXECUTED",
+                    "metrics": retrieval_metrics(v2_cases, v2_latencies),
+                    "llm_calls_per_query": round(v2_usage["call_count"] / len(dataset), 4),
+                    "token_usage": v2_usage,
+                    "rewrite_success_count": rewrite_success_count,
+                    "rewrite_fallback_count": len(dataset) - rewrite_success_count,
+                    "rerank_call_count": v2_rerank_usage["call_count"],
+                    "per_sample_results": v2_cases,
+                }
+
+                direct_top10: Dict[str, List[Dict[str, Any]]] = {}
+                direct_top10_ms: Dict[str, float] = {}
+                for sample in dataset:
+                    started = time.perf_counter()
+                    direct_top10[sample["id"]] = await kb.search_async(sample["query"], top_k=10)
+                    direct_top10_ms[sample["id"]] = (time.perf_counter() - started) * 1000
+                before_rerank_only = tracker.snapshot()
+                ro_rows = await asyncio.gather(*(
+                    rerank_one(sample, direct_top10[sample["id"]]) for sample in dataset
+                ))
+                ro_usage = tracker.delta(before_rerank_only)
+                ro_by_id = {item_id: items for item_id, items, _ in ro_rows}
+                ro_ms = {item_id: latency for item_id, _, latency in ro_rows}
+                ro_cases: List[Dict[str, Any]] = []
+                ro_latencies: List[float] = []
+                for sample in dataset:
+                    item_id = sample["id"]
+                    items = ro_by_id[item_id]
+                    total_ms = direct_top10_ms[item_id] + ro_ms[item_id]
+                    ro_latencies.append(total_ms)
+                    ro_cases.append({
+                        "id": item_id, "query": sample["query"], "query_type": sample["query_type"],
+                        "relevant_titles": sample["relevant_titles"],
+                        "candidate_titles_before_rerank": [item["title"] for item in direct_top10[item_id]],
+                        "retrieved_titles": [item["title"] for item in items], "retrieved_items": items,
+                        "latency_ms": round(total_ms, 3),
+                    })
+                variants["Rerank Only"] = {
+                    "status": "EXECUTED" if ro_usage["empty_text_response_count"] == 0 else "PARTIALLY EXECUTED",
+                    "metrics": retrieval_metrics(ro_cases, ro_latencies),
+                    "llm_calls_per_query": round(ro_usage["call_count"] / len(dataset), 4),
+                    "token_usage": ro_usage,
+                    "per_sample_results": ro_cases,
+                }
+
+                direct_by_id = {case["id"]: case for case in direct_cases}
+                v1_by_id = {case["id"]: case for case in v1_cases}
+                v2_by_id = {case["id"]: case for case in v2_cases}
+                for sample in dataset:
+                    gold = set(sample["relevant_titles"])
+                    if not gold:
+                        continue
+                    direct_titles = direct_by_id[sample["id"]]["retrieved_titles"]
+                    v1_titles = v1_by_id[sample["id"]]["retrieved_titles"]
+                    v2_titles = v2_by_id[sample["id"]]["retrieved_titles"]
+                    direct_hit = bool(gold.intersection(direct_titles))
+                    v1_hit = bool(gold.intersection(v1_titles))
+                    if not direct_hit and v1_hit:
+                        rag_bad_cases.append({
+                            "id": "BC-RAG-%03d" % (len(rag_bad_cases) + 1), "feature": "Query Rewrite",
+                            "input": sample["query"], "gold_documents": sample["relevant_titles"],
+                            "Direct Top-5": direct_titles, "rewrite_queries": rewrites[sample["id"]],
+                            "Rewrite Top-5": v1_titles, "current_result": v2_titles,
+                            "conclusion": "Query Rewrite moved at least one gold document into Top-5.",
+                        })
+                    elif direct_hit and not v1_hit:
+                        rag_bad_cases.append({
+                            "id": "BC-RAG-%03d" % (len(rag_bad_cases) + 1), "feature": "Query Rewrite Drift",
+                            "input": sample["query"], "gold_documents": sample["relevant_titles"],
+                            "Direct Top-5": direct_titles, "rewrite_queries": rewrites[sample["id"]],
+                            "Rewrite Top-5": v1_titles, "current_result": v2_titles,
+                            "conclusion": "Query Rewrite removed all gold documents from Top-5.",
+                        })
+
+                    candidate_titles = v2_by_id[sample["id"]]["candidate_titles_before_rerank"]
+                    before_rank = next((i + 1 for i, title in enumerate(candidate_titles) if title in gold), None)
+                    after_rank = next((i + 1 for i, title in enumerate(v2_titles) if title in gold), None)
+                    if before_rank and after_rank and before_rank != after_rank:
+                        rag_bad_cases.append({
+                            "id": "BC-RAG-%03d" % (len(rag_bad_cases) + 1), "feature": "LLM Rerank",
+                            "input": sample["query"], "gold_documents": sample["relevant_titles"],
+                            "rank_before": before_rank, "rank_after": after_rank,
+                            "before_titles": candidate_titles[:10], "after_titles": v2_titles,
+                            "conclusion": "Rerank improved the gold rank." if after_rank < before_rank else "Rerank made the gold rank worse.",
+                        })
+            else:
+                for name in ["V1 Query Rewrite (No Rerank)", "V2 Current Rewrite + Rerank", "Rerank Only"]:
+                    variants[name] = {
+                        "status": "NOT EXECUTED",
+                        "reason": "LLM probe failed: %s." % llm_probe.get("reason"),
+                    }
     except Exception as exc:
         chunk_count = None
         error = "%s: %s" % (type(exc).__name__, str(exc)[:240])
-
-    variants: Dict[str, Any] = {}
     if error:
-        variants["V0 Direct Retrieval"] = {"status": "NOT EXECUTED", "reason": error}
-    else:
-        variants["V0 Direct Retrieval"] = {
-            "status": "EXECUTED",
-            "knowledge_chunk_count": chunk_count,
-            "metrics": retrieval_metrics(cases, latencies),
-            "llm_calls_per_query": 0,
-            "per_sample_results": cases,
-        }
-
-    for name in ["V1 Query Rewrite (No Rerank)", "V2 Current Rewrite + Rerank", "Rerank Only"]:
-        if not llm_probe.get("available"):
-            variants[name] = {
-                "status": "NOT EXECUTED",
-                "reason": "LLM probe failed: %s. Rewrite and rerank silently fall back on failure, so fallback output must not be reported as a valid ablation result." % llm_probe.get("reason"),
-            }
-        else:
-            variants[name] = {
-                "status": "NOT EXECUTED",
-                "reason": "This run executed isolated Direct Retrieval only. LLM-heavy RAG variants require a model endpoint with auditable usage.",
-            }
-
-    rag_bad_cases: List[Dict[str, Any]] = []
-    if not error:
-        for case in cases:
-            if case["relevant_titles"] and not set(case["relevant_titles"]).intersection(case["retrieved_titles"][:5]):
-                rag_bad_cases.append({
-                    "id": "BC-RAG-%03d" % (len(rag_bad_cases) + 1),
-                    "feature": "Direct Retrieval",
-                    "input": case["query"],
-                    "gold_documents": case["relevant_titles"],
-                    "Direct Top-5": case["retrieved_titles"],
-                    "current_result": "NOT EXECUTED",
-                    "conclusion": "Direct Retrieval missed the gold document. Rewrite and rerank were not executed, so Current cannot be claimed to have fixed this case.",
-                })
+        variants = {"V0 Direct Retrieval": {"status": "NOT EXECUTED", "reason": error}}
     write_json(output_dir / "rag_ablation.json", envelope(
         "PARTIALLY EXECUTED" if not error else "NOT EXECUTED",
-        "Isolated Direct Retrieval was executed. Variants that require a valid LLM are marked according to the probe result.",
-        "A temporary ChromaDB imported the 20 current default demo documents. Production data/chroma was neither read nor modified.",
+        "All four retrieval variants were attempted with auditable LLM call and token totals; structured-output fallbacks remain visible in each variant status." if not error and llm_probe.get("available") else "Only variants supported by the available environment were executed.",
+        "A temporary ChromaDB imported the 20 current default demo documents. Rewrite output was reused between V1 and V2 to avoid sampling confounds; production data/chroma was neither read nor modified.",
         {"llm_probe": llm_probe, "variants": variants, "observed_bad_cases": rag_bad_cases},
     ))
     return rag_bad_cases
@@ -845,25 +1095,122 @@ async def tool_benchmark(output_dir: Path) -> List[Dict[str, Any]]:
     return bad_cases
 
 
-def judge_benchmark(output_dir: Path, llm_probe: Dict[str, Any]) -> None:
+async def judge_benchmark(output_dir: Path, llm_probe: Dict[str, Any]) -> List[Dict[str, Any]]:
+    from evaluation.evaluator import LLMJudge
+
     dataset = load_json(DATA_DIR / "judge_design_rationale.json")
-    reason = (
-        "LLM probe failed: %s. The current Evaluator returns 0.5 with judge_failed=true on Judge failure; 0.5 must not be reported as a real Judge score." % llm_probe.get("reason")
-        if not llm_probe.get("available") else
-        "This run did not execute repeated Judge calls without usage auditing."
-    )
+    if not llm_probe.get("available"):
+        write_json(output_dir / "judge_reliability.json", envelope(
+            "NOT EXECUTED",
+            "LLM probe failed: %s. The current Evaluator returns 0.5 with judge_failed=true on Judge failure; 0.5 must not be reported as a real Judge score." % llm_probe.get("reason"),
+            "Stored controlled high-, medium-, and low-quality responses. Each response must be scored three times before variance and range are calculated.",
+            {
+                "dataset_sample_count": len(dataset["samples"]),
+                "Relevance/Accuracy/Completeness/Helpfulness": "NOT EXECUTED",
+                "repeated_score_variance": "NOT EXECUTED",
+                "controlled_http_success_samples": dataset["samples"],
+                "conclusion_boundary": "Judge is an automated regression signal, not absolute ground truth.",
+            },
+        ))
+        return []
+
+    _, _, model = llm_settings()
+    tracker = tracked_llm_client(min_max_tokens=1024)
+    judge = LLMJudge(tracker, model)
+    semaphore = asyncio.Semaphore(4)
+    repeats = 3
+
+    async def score_once(sample: Dict[str, Any], quality: str, response: str, repeat: int) -> Dict[str, Any]:
+        async with semaphore:
+            started = time.perf_counter()
+            scores = await judge.judge(
+                sample["question"], response,
+                context="Expected points: " + "; ".join(sample.get("expected_points", [])),
+            )
+            return {
+                "sample_id": sample["id"], "quality": quality, "repeat": repeat,
+                "relevance": scores.relevance, "accuracy": scores.accuracy,
+                "completeness": scores.completeness, "helpfulness": scores.helpfulness,
+                "overall": round(scores.overall, 4), "judge_failed": scores.judge_failed,
+                "error": scores.error, "latency_ms": round((time.perf_counter() - started) * 1000, 3),
+            }
+
+    tasks = []
+    for sample in dataset["samples"]:
+        for quality, response in sample["response_variants"].items():
+            for repeat in range(1, repeats + 1):
+                tasks.append(score_once(sample, quality, response, repeat))
+    rows = await asyncio.gather(*tasks)
+    valid_rows = [row for row in rows if not row["judge_failed"]]
+    grouped: Dict[Tuple[str, str], List[Dict[str, Any]]] = defaultdict(list)
+    for row in valid_rows:
+        grouped[(row["sample_id"], row["quality"])].append(row)
+
+    per_sample: List[Dict[str, Any]] = []
+    bad_cases: List[Dict[str, Any]] = []
+    ordering_passes = 0
+    ordering_evaluable = 0
+    for sample in dataset["samples"]:
+        summaries: Dict[str, Any] = {}
+        for quality in ("high_quality", "medium_quality", "low_quality"):
+            group = grouped.get((sample["id"], quality), [])
+            overall = [row["overall"] for row in group]
+            summaries[quality] = {
+                "mean_overall": round(statistics.mean(overall), 4) if overall else None,
+                "variance": round(statistics.pvariance(overall), 6) if len(overall) > 1 else 0.0 if overall else None,
+                "score_range": round(max(overall) - min(overall), 4) if overall else None,
+                "dimension_means": {
+                    dimension: round(statistics.mean(row[dimension] for row in group), 4) if group else None
+                    for dimension in ("relevance", "accuracy", "completeness", "helpfulness")
+                },
+                "runs": group,
+            }
+        high = summaries["high_quality"]["mean_overall"]
+        medium = summaries["medium_quality"]["mean_overall"]
+        low = summaries["low_quality"]["mean_overall"]
+        ordered = bool(high is not None and medium is not None and low is not None and high > medium > low)
+        evaluable = high is not None and medium is not None and low is not None
+        ordering_evaluable += int(evaluable)
+        ordering_passes += int(evaluable and ordered)
+        per_sample.append({"id": sample["id"], "question": sample["question"], "quality_order_correct": ordered, "scores": summaries})
+        if not evaluable or not ordered:
+            bad_cases.append({
+                "id": "BC-JUDGE-%03d" % (len(bad_cases) + 1), "feature": "LLM-as-Judge",
+                "input": sample["question"], "expected_order": "high > medium > low",
+                "observed_scores": {key: value["mean_overall"] for key, value in summaries.items()},
+                "measured_effect": "Judge did not preserve the controlled quality ordering.",
+            })
+
+    aggregate: Dict[str, Any] = {}
+    for quality in ("high_quality", "medium_quality", "low_quality"):
+        quality_rows = [row for row in valid_rows if row["quality"] == quality]
+        aggregate[quality] = {
+            "mean_overall": round(statistics.mean(row["overall"] for row in quality_rows), 4) if quality_rows else None,
+            "mean_dimensions": {
+                dimension: round(statistics.mean(row[dimension] for row in quality_rows), 4) if quality_rows else None
+                for dimension in ("relevance", "accuracy", "completeness", "helpfulness")
+            },
+        }
     write_json(output_dir / "judge_reliability.json", envelope(
-        "NOT EXECUTED",
-        reason,
-        "Stored controlled high-, medium-, and low-quality responses. Each response must be scored three to five times before variance and range are calculated.",
+        "EXECUTED" if len(valid_rows) == len(rows) else "PARTIALLY EXECUTED",
+        "Repeated LLM-as-Judge scoring completed; failed calls are excluded rather than replaced by fallback 0.5 scores.",
+        "Three controlled response qualities for each of three questions were scored three times with temperature 0. Expected points were supplied as evaluation context. The benchmark raises max_tokens to 1024 so the configured reasoning model can emit final JSON; production Evaluator remains at 256 and is reported as a compatibility limitation.",
         {
             "dataset_sample_count": len(dataset["samples"]),
-            "Relevance/Accuracy/Completeness/Helpfulness": "NOT EXECUTED",
-            "repeated_score_variance": "NOT EXECUTED",
-            "controlled_http_success_samples": dataset["samples"],
+            "repeat_count_per_response": repeats,
+            "benchmark_max_tokens": 1024,
+            "production_evaluator_max_tokens": 256,
+            "successful_judge_calls": len(valid_rows), "failed_judge_calls": len(rows) - len(valid_rows),
+            "quality_order_evaluable_sample_count": ordering_evaluable,
+            "quality_order_accuracy": round(ordering_passes / ordering_evaluable, 4) if ordering_evaluable else None,
+            "aggregate_quality_scores": aggregate,
+            "per_sample_results": per_sample,
+            "llm_usage": tracker.snapshot(),
+            "observed_bad_cases": bad_cases,
             "conclusion_boundary": "Judge is an automated regression signal, not absolute ground truth.",
         },
     ))
+    return bad_cases
 
 
 def write_bad_cases(output_dir: Path, groups: Sequence[List[Dict[str, Any]]]) -> None:
@@ -893,8 +1240,8 @@ async def main() -> None:
     memory_benchmark(output_dir, llm_probe)
     skill_cases = skills_benchmark(output_dir, llm_probe)
     tool_cases = await tool_benchmark(output_dir)
-    judge_benchmark(output_dir, llm_probe)
-    write_bad_cases(output_dir, [intent_cases, rag_cases, routing_cases, skill_cases, tool_cases])
+    judge_cases = await judge_benchmark(output_dir, llm_probe)
+    write_bad_cases(output_dir, [intent_cases, rag_cases, routing_cases, skill_cases, tool_cases, judge_cases])
 
     print(json.dumps({
         "status": "benchmark-complete",
