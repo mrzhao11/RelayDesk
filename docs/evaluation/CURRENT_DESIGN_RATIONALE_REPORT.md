@@ -18,13 +18,17 @@
 
 ### Q2. 相比 Direct ChromaDB Retrieval，Query Rewrite 到底解决了哪些真实 Bad Cases？
 
-**四组 RAG 已真实运行，但当前 Query Rewrite 没有提高召回。** 25 次 Rewrite 调用只有 1 次生成有效多查询，24 次因 `max_tokens` 截断回退为原查询。因此 Direct、Rewrite、Current Rewrite+Rerank、Rerank Only 的 Recall@1/3/5 和 MRR 全部相同，分别为 `0.0909/0.3636/0.5227/0.2303`。
+**四组 RAG 已按正式参数真实运行，但当前 Query Rewrite 没有提高召回。** 25 次 Rewrite 调用只有 1 次生成有效多查询，24 次因 `max_tokens` 截断回退为原查询。因此 Direct、Rewrite、Current Rewrite+Rerank、Rerank Only 的 Recall@1/3/5 和 MRR 全部相同，分别为 `0.0909/0.3636/0.5227/0.2303`。
 
-当前能真实回答的是：设计动机成立，但与当前推理模型的结构化输出兼容性不足，优化链路在运行时基本退化为 Direct；不存在可以声称“Rewrite 已修复”的案例。
+为区分“机制无效”和“输出预算不兼容”，又从 Direct 漏召回中固定选取 6 个困难案例，将**评测适配器**的结构化输出下限从 256 临时提高到 4096，正式代码和配置不变。6 次 Rewrite 均成功输出查询；Direct Top-5 为 `0/6`，Rewrite Top-5 为 `3/6`，Rewrite+Rerank Top-5 为 `4/6`。其中“`forbidden`”案例从 Direct Top-5 外进入最终第 1，“秒退”“两条一样的交易”“退的钱几天回原账户”分别进入第 2/5/4。
+
+因此准确结论是：**Rewrite 对口语同义表达有可观察收益，但当前 256 Token 正式配置无法兑现；而宽泛服务范围、已开票修改公司名两个案例即使扩容仍失败。** 这 6 条是刻意选择的困难样本，不能替代 25 条正式参数主结果。
 
 ### Q3. Rerank 主要提升 Recall 还是 Ranking Quality？
 
-从机制看，Rerank 目标仍是 **Ranking Quality / MRR**。本轮 Rerank Only 发起 25 次调用，全部在 256 Token 上限结束且没有最终文本，生产逻辑回退为原排序，所以 MRR 仍为 `0.2303`。结论不是“Rerank 无价值”，而是“当前模型与输出预算组合没有让 Rerank 真正生效”。
+从机制看，Rerank 目标仍是 **Ranking Quality / MRR**。正式参数下，Rerank Only 发起 25 次调用，全部在 256 Token 上限结束且没有最终文本，生产逻辑回退为原排序，所以 MRR 仍为 `0.2303`。
+
+6 条兼容性诊断中，Rewrite+Rerank 相比 Rewrite 将 MRR 从 `0.1583` 提到 `0.3250`，主要由 403 文档从 Top-5 外提升到第 1 驱动；但该阶段只有 3/6 次得到模型结果，另外 3 次触发 30 秒超时。Rerank Only 的 6 次则全部超时，排序完全未变。它说明 Rerank 在候选已召回时能改善顺序，也说明当前推理模型的延迟不满足在线链路要求，不能直接把 4096 设为生产修复。
 
 ### Q4. 相比 Single General Agent，Multi-Agent 到底解决了什么问题？
 
@@ -88,7 +92,7 @@
 | 已执行但暴露兼容性问题 | Intent LLM 分支、四组 RAG、Judge 调用均已真实发起；结构化输出截断导致大量 fallback |
 | 仍是工程假设 | 分层 Memory 效果；多 Agent 回答质量；回答级 Skills 合规性；Judge 重复稳定性 |
 
-最重要的硬结论不是“当前设计全部正确”，而是：**LLM 网络与鉴权已正常，当前主要阻塞已经从 401 转为推理模型在 256 Token 预算下无法稳定输出最终 JSON。系统机制存在，但运行时会安全退化，收益尚未兑现。**
+最重要的硬结论不是“当前设计全部正确”，而是：**LLM 网络与鉴权已正常，当前主要阻塞已经从 401 转为推理模型在 256 Token 预算下无法稳定输出最终 JSON。6 条兼容性诊断证明 Rewrite/Rerank 机制可以改变部分困难案例，但更大预算又触发 30 秒级超时；系统机制存在，生产参数下仍会安全退化，收益尚未兑现。**
 
 ## 2. Test Environment
 
@@ -240,7 +244,7 @@ LLM Only 与 Current 已产生逐样本对照；整体上 Current 略低于 LLM 
 | RAG-018 | 修改账号联系人信息 | 账户资料变更 | 发票抬头、密码重置、异常登录 |
 | RAG-024 | 正常登录但财务文件无访问权 | 403 排查 | 异常登录、支付失败、申请流程 |
 
-这些是 Query Rewrite 的**候选设计动机**，不是“Rewrite 已修复”的证据。
+在 25 条正式参数主测试里，这些仍只是 Query Rewrite 的**候选设计动机**。后续 7.5 节的定向兼容性诊断从中选了 6 条，并在更大输出预算下观察到 4 条最终进入 Top-5；不能把该结果外推成 10 条全部已修复。
 
 ### 7.3 Query Rewrite 的真实结论边界
 
@@ -249,6 +253,30 @@ LLM Only 与 Current 已产生逐样本对照；整体上 Current 略低于 LLM 
 ### 7.4 Rerank 的真实结论边界
 
 Rerank Only 共发起 25 次 LLM 调用，全部在 256 Token 上限结束且没有最终文本，正式逻辑返回原顺序，因此 MRR 和 Recall 均未变化。Current 版本因 Rewrite 大多回退、候选数不超过 Top-K，只触发了 1 次实际 Rerank 调用。这是有效的运行时负结果，而不是未执行。
+
+### 7.5 六条兼容性诊断：提高输出预算后发生了什么
+
+这组诊断不改正式实现，只在 benchmark 的 LLM 包装层将 `max_tokens` 下限临时设为 4096，并复用正式 Rewrite/Rerank prompt、同一批 20 篇临时知识和现有 30 秒 Tool timeout。样本从 Direct Top-5 漏召回案例中固定挑选，因此用于展示机制和失败边界，不用于估计总体线上效果。
+
+| 版本 | Top-1 命中 | Top-3 命中 | Top-5 命中 | MRR | P95 ms |
+|---|---:|---:|---:|---:|---:|
+| Direct | 0/6 | 0/6 | 0/6 | 0.0000 | 594.226 |
+| Query Rewrite | 0/6 | 1/6 | 3/6 | 0.1583 | 15563.120 |
+| Rewrite + Rerank | 1/6 | 2/6 | 4/6 | 0.3250 | 57207.857 |
+| Rerank Only | 0/6 | 0/6 | 0/6 | 0.0000 | 45807.243 |
+
+逐案例结果：
+
+| 查询 | Direct | Rewrite | Rewrite+Rerank | 解释 |
+|---|---:|---:|---:|---|
+| 能登录但是某个资源 forbidden | 未进 Top-5 | 未进 Top-5 | 第 1 | Rewrite 把 403/权限语义带入候选，成功的 Rerank 将 gold 提到首位 |
+| 电脑端程序启动后秒退 | 未进 Top-5 | 第 2 | 第 2 | “秒退”被扩写为“闪退/崩溃”，Rewrite 单独修复 |
+| 一笔服务出现两条一样的交易 | 未进 Top-5 | 第 5 | 第 5 | 扩写加入“重复扣款/重复记录”，但排序仍偏后 |
+| 退的钱一般几天回原账户 | 未进 Top-5 | 第 4 | 第 4 | 扩写加入“退款到账/原路退回”，成功进入 Top-5 |
+| 服务台能处理哪些企业问题 | 未进 Top-5 | 未进 Top-5 | 未进 Top-5 | 宽泛查询仍被多个具体服务主题吸走 |
+| 票已经开了还能换公司名称吗 | 未进 Top-5 | 未进 Top-5 | 未进 Top-5 | 查询扩写合理，但当前 embedding 仍未召回发票抬头文档 |
+
+LLM 运行细节也必须同时披露：Rewrite 6/6 正常结束且没有空文本；Rewrite 后的 Rerank 只有 3/6 完成，另外 3 次超时；Rerank Only 6/6 超时。由此得到的工程优先级是：先解决结构化输出模型/预算兼容性，再选择低延迟 Reranker 或缩小候选与输出格式；不能简单把生产 `max_tokens` 提到 4096。
 
 ## 8. Multi-Agent Ablation
 
@@ -423,8 +451,8 @@ Judge 的正确定位是自动化回归信号，不是绝对 ground truth。恢�
 ### 13.5 没有生成 Bad Case 的部分
 
 - Intent Fusion：已运行，但 21/47 次结构化输出失败；Current 指标略低于 LLM Only。
-- Query Rewrite：已运行，24/25 次回退原查询，没有产生召回增益案例。
-- Rerank：已运行，Rerank Only 的 25 次调用全部截断并回退原顺序。
+- Query Rewrite：正式参数已运行，24/25 次回退原查询，没有产生召回增益；6 条兼容性诊断中产生 3 条 Rewrite Top-5 命中。
+- Rerank：正式参数下 Rerank Only 的 25 次调用全部截断；兼容性诊断出现 1 条明确排序改善，但 9/12 个两组 Rerank 请求超时。
 - Multi-Agent 回答：没有实际回答与 Judge，所以没有漏答、冲突、synthesis 丢信息案例。
 - Memory：没有真实压缩和跨会话检索，所以没有事实遗忘、错误画像或历史污染案例。
 - Judge：10/27 次评分有效，聚合质量顺序正确，但重复覆盖不足，不能评价稳定方差。
@@ -447,8 +475,8 @@ Judge 的正确定位是自动化回归信号，不是绝对 ground truth。恢�
 ### RAG
 
 1. Direct：简单、低调用数，但本轮 Recall@5 仅 0.5227。
-2. + Rewrite：已执行但 24/25 次回退，Recall/MRR 不变，P95 增至约 6.7 秒。
-3. + Rerank：已执行但结构化输出全部截断，排序和指标不变。
+2. + Rewrite：正式参数下 24/25 次回退，Recall/MRR 不变；6 条兼容性诊断中 Top-5 从 0/6 提到 3/6，但 P95 为约 15.56 秒。
+3. + Rerank：正式参数下全部截断；兼容性诊断出现 1 条明确排序改善，但大量请求在 30 秒超时后回退。
 4. + score/fallback filter：防止“有返回即命中”；无答案样本的 Direct 返回率 1.0 支持这个边界。
 
 ### Agent
@@ -521,8 +549,8 @@ Cache、Timeout、Fallback、Breaker 和 Recovery 均通过 Fake Tool 故障注�
 | Intent Fusion 是否优于 LLM Only | 本轮未优于 | 44.68% LLM JSON 解析失败，Current 0.5333 < LLM-only 0.5556 |
 | 70/20/10 与 85/15 | 已跑但未校准 | 结构化输出可靠性主导结果 |
 | confidence 0.5 | 未校准 | 没有 threshold curve |
-| Query Rewrite | 已运行、无增益 | 24/25 回退原查询，Recall/MRR 不变 |
-| Rerank | 已运行、无增益 | 25/25 输出截断并回退原排序 |
+| Query Rewrite | 正式参数无增益；兼容诊断有增益 | 24/25 回退；扩容后 6 条困难样本有 3 条进入 Top-5，但延迟不可接受 |
+| Rerank | 正式参数无增益；兼容诊断有单例增益 | 正式参数 25/25 截断；扩容后有 1 条升至第 1，但 30 秒超时频繁 |
 | RAG score 0.20 / Top-K | 未校准 | 无 precision-recall/拒答曲线 |
 | supporting score 0.45 / ratio 0.55 | 仅小样本吻合 | 路由数据集与规则同源 |
 | Multi-Agent Synthesis | 未证明 | 回答/Judge 未执行 |
@@ -668,7 +696,9 @@ Original Query → ChromaDB Top-K。
 
 #### Result
 
-**实测负结果**：当前链路没有提升 Recall 或 MRR，主要原因是结构化输出截断后安全回退。
+**正式参数实测负结果**：当前链路没有提升 Recall 或 MRR，主要原因是结构化输出截断后安全回退。
+
+**兼容性诊断**：在 6 条 Direct 全部漏召回的困难样本上，仅提高 benchmark 输出预算后，Rewrite 命中 3 条，Rewrite+Rerank 命中 4 条；403 案例升到第 1。但 Rewrite P95 约 15.56 秒，完整链路 P95 约 57.21 秒，不能作为生产参数建议。
 
 #### Trade-off
 
@@ -682,6 +712,7 @@ Original Query → ChromaDB Top-K。
 - Dynamic Skills 平均 prompt 字符减少率：64.68%。
 - Direct RAG：Recall@1 0.0909、Recall@3 0.3636、Recall@5 0.5227、MRR 0.2303、P95 155.128ms。
 - Rewrite/Current/Rerank-only：指标与 Direct 相同；P95 分别约 6.73s、6.85s、6.08s。
+- 兼容性诊断（6 条定向困难样本、非总体指标）：Direct Top-5 0/6，Rewrite 3/6，Rewrite+Rerank 4/6；Rerank 阶段频繁触发 30 秒超时。
 - Judge 有效聚合 Overall：高 0.9725、中 0.6625、低 0.1375；成功调用 10/27。
 - 无答案 Direct Top-5 返回率：1.0，说明需要命中语义过滤。
 - Tool：重复调用 2→1；5 次失败后第 6 次不再打 handler；恢复后 CLOSED。
@@ -701,12 +732,22 @@ TOKENIZERS_PARALLELISM=false \
 python3 evaluation/benchmark/run_design_rationale.py
 ```
 
+复现 6 条 RAG 兼容性案例（会调用当前 LLM；只使用临时知识库，不修改生产配置）：
+
+```bash
+TMPDIR=/tmp \
+PYTHONPYCACHEPREFIX=/tmp/relaydesk-rag-examples-pycache \
+TOKENIZERS_PARALLELISM=false \
+python3 evaluation/benchmark/run_rag_compatibility_examples.py
+```
+
 验证脚本、Python 核心文件和结果 JSON：
 
 ```bash
 PYTHONPYCACHEPREFIX=/tmp/relaydesk-design-pycache \
 python3 -m py_compile \
   evaluation/benchmark/run_design_rationale.py \
+  evaluation/benchmark/run_rag_compatibility_examples.py \
   api/main.py \
   core/intent_recognizer.py \
   core/skill_loader.py \
@@ -731,6 +772,7 @@ done
 - `evaluation/results/design_rationale/intent_ablation.json`
 - `evaluation/results/design_rationale/intent_weight_ablation.json`
 - `evaluation/results/design_rationale/rag_ablation.json`
+- `evaluation/results/design_rationale/rag_compatibility_examples.json`
 - `evaluation/results/design_rationale/routing_ablation.json`
 - `evaluation/results/design_rationale/multi_agent_ablation.json`
 - `evaluation/results/design_rationale/memory_ablation.json`
@@ -755,6 +797,7 @@ done
 | intent_ablation.json | PARTIALLY EXECUTED / 部分执行 |
 | intent_weight_ablation.json | EXECUTED / 已执行（受 LLM 解析失败影响） |
 | rag_ablation.json | PARTIALLY EXECUTED / 部分执行 |
+| rag_compatibility_examples.json | EXECUTED / 已执行（6 条定向兼容性诊断） |
 | routing_ablation.json | EXECUTED / 已执行 |
 | multi_agent_ablation.json | NOT EXECUTED / 未执行 |
 | memory_ablation.json | PARTIALLY EXECUTED / 部分执行 |
