@@ -1,0 +1,19 @@
+{
+  "dataset_name": "RelayDesk Routing and Multi-Agent Design Rationale Benchmark",
+  "version": "1.0",
+  "description": "Gold role sets measure concern coverage and must not be interpreted as end-to-end response quality.",
+  "samples": [
+    {"id":"ROUTE-001","message":"企业统一服务台能做什么？","intent":"query","required_roles":["general"],"scenario":"single-domain"},
+    {"id":"ROUTE-002","message":"我想修改账户绑定邮箱。","intent":"account","required_roles":["general"],"scenario":"single-domain"},
+    {"id":"ROUTE-003","message":"登录报 401。","intent":"technical_login","required_roles":["technical"],"scenario":"single-domain"},
+    {"id":"ROUTE-004","message":"页面一直返回 500。","intent":"technical","required_roles":["technical"],"scenario":"single-domain"},
+    {"id":"ROUTE-005","message":"如何修改发票抬头？","intent":"invoice","required_roles":["billing"],"scenario":"single-domain"},
+    {"id":"ROUTE-006","message":"为什么出现重复扣款？","intent":"payment_issue","required_roles":["billing"],"scenario":"single-domain"},
+    {"id":"ROUTE-007","message":"登录报 401，而且还被重复扣款。","intent":"technical_login","required_roles":["technical","billing"],"scenario":"technical-plus-billing"},
+    {"id":"ROUTE-008","message":"页面 500，同时这次支付也被扣了两遍。","intent":"technical","required_roles":["technical","billing"],"scenario":"technical-plus-billing"},
+    {"id":"ROUTE-009","message":"订阅扣费后客户端就开始崩溃。","intent":"billing","required_roles":["billing","technical"],"scenario":"billing-plus-technical"},
+    {"id":"ROUTE-010","message":"我要投诉，请帮我转人工。","intent":"human_handoff","required_roles":["escalation"],"scenario":"human-escalation"},
+    {"id":"ROUTE-011","message":"账号疑似被盗，而且有一笔陌生扣款。","intent":"account_security","required_roles":["technical","billing"],"scenario":"security-plus-billing"},
+    {"id":"ROUTE-012","message":"先告诉我开票流程，再说明页面 500 怎么收集信息。","intent":"invoice","required_roles":["billing","technical"],"scenario":"billing-plus-technical"}
+  ]
+}

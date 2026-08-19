@@ -1,0 +1,10 @@
+{
+  "dataset_name": "RelayDesk Layered Memory Design Rationale Benchmark",
+  "version": "1.0",
+  "description": "Tests fact retention, recent context, conversation summaries, and user preferences in long conversations. No real personal data is included.",
+  "scenarios": [
+    {"id":"MEM-001","name":"Cross-turn 401 troubleshooting","key_facts":["The system is a demo expense platform","The error code is 401","The user already tried signing in again","The device clock is correct","The request ID is DEMO-A17"],"followup_question":"把我已经试过的步骤和还需要补充的信息列出来。"},
+    {"id":"MEM-002","name":"Billing dispute follow-up","key_facts":["There are two demo charges","Both charges are CNY 299","The payment channel is a corporate card","A redacted transaction ID was saved","The user prefers concise answers"],"followup_question":"继续处理刚才的费用问题，并按我的偏好回答。"},
+    {"id":"MEM-003","name":"Cross-domain composite request","key_facts":["The user first asked about changing an invoice title","A page 500 error occurred later","The invoice has not been issued","The 500 error affects only this user","No backend operation may be claimed"],"followup_question":"综合前面的信息给我下一步建议。"}
+  ]
+}
