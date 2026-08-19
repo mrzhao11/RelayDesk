@@ -10,21 +10,21 @@
 
 ### Q1. 相比最简单 LLM-only Intent，当前三路 Intent Fusion 到底提升了什么？
 
-**本轮不能给出有效的提升数值。** 配置中的 `api.deepseek.com / deepseek-v4-pro` 在最小调用时返回 `HTTP 401`，所以 LLM Only、LLM + Pattern、LLM + Embedding 和 Current Fusion 都是 `NOT EXECUTED / 未执行`。把 LLM 失败后的 Pattern fallback 当成 Current 会夸大结论，因此没有这样做。
+**模型接口已经恢复，但结构化输出仍不稳定。** 最小调用成功，耗时 `955.395ms`；47 条 Intent 调用中 26 条成功解析 JSON、21 条因输出截断退化为 `OTHER`。按真实运行结果，LLM Only Accuracy/Macro-F1 为 `0.5556/0.5599`，Current Fusion 为 `0.5333/0.5354`，本轮 Current 没有优于 LLM Only，反而分别低 `0.0223/0.0245`。
 
-可复现的组件诊断显示：45 条非歧义样本上，Pattern 单分支 Accuracy 为 `0.4889`、Macro-F1 为 `0.4968`；本地字符 n-gram Embedding 单分支 Accuracy 为 `0.2889`、Macro-F1 为 `0.2520`。Pattern 在 fine-grained 分组上 Accuracy 为 `0.6667`，说明它有补充细粒度强关键词的潜力，但这不是“相对 LLM Only 的增益”。
+可复现的组件诊断仍显示 Pattern 单分支 Accuracy 为 `0.4889`、Macro-F1 为 `0.4968`。本轮权重消融已执行，但结果受 44.68% 的 LLM 结构化输出失败率影响，只能解释为当前运行配置的可靠性表现，不能用于宣称权重最优。
 
 还必须纠正一个容易误讲的点：当前 `.env` 使用第三方兼容端点，因此正式代码会关闭 Embedding，实际融合是 **LLM 85% + Pattern 15%**，不是三路 70/20/10。只有不设置第三方 `base_url` 时，代码才启用本地 Embedding 并采用 70/20/10。
 
 ### Q2. 相比 Direct ChromaDB Retrieval，Query Rewrite 到底解决了哪些真实 Bad Cases？
 
-**本轮没有证据证明 Query Rewrite 已解决任何案例。** Direct Retrieval 已执行并观察到 10 个 Top-5 漏召回案例，包括服务台能力、申请进度、403、软件秒退、开票资料、发票抬头、重复交易、退款时效、账户资料和权限排查。Query Rewrite 因模型 401 未执行，不能把这些“候选动机案例”写成“已修复案例”。
+**四组 RAG 已真实运行，但当前 Query Rewrite 没有提高召回。** 25 次 Rewrite 调用只有 1 次生成有效多查询，24 次因 `max_tokens` 截断回退为原查询。因此 Direct、Rewrite、Current Rewrite+Rerank、Rerank Only 的 Recall@1/3/5 和 MRR 全部相同，分别为 `0.0909/0.3636/0.5227/0.2303`。
 
-当前能真实回答的是：Direct Retrieval 在中文口语、术语不一致和短查询上存在明显漏召回，因此 Query Rewrite 有合理动机；它是否有效，仍需模型恢复后补跑同一数据集。
+当前能真实回答的是：设计动机成立，但与当前推理模型的结构化输出兼容性不足，优化链路在运行时基本退化为 Direct；不存在可以声称“Rewrite 已修复”的案例。
 
 ### Q3. Rerank 主要提升 Recall 还是 Ranking Quality？
 
-从代码机制看，Rerank 只重排已经召回的候选，不能创造新候选，所以设计目标主要是 **Ranking Quality / MRR**，不是候选集 Recall。实验上，Rerank 本轮 `NOT EXECUTED / 未执行`，不能声称 MRR 已提升。Direct 基线的 MRR 为 `0.2303`，只是待改进基线。
+从机制看，Rerank 目标仍是 **Ranking Quality / MRR**。本轮 Rerank Only 发起 25 次调用，全部在 256 Token 上限结束且没有最终文本，生产逻辑回退为原排序，所以 MRR 仍为 `0.2303`。结论不是“Rerank 无价值”，而是“当前模型与输出预算组合没有让 Rerank 真正生效”。
 
 ### Q4. 相比 Single General Agent，Multi-Agent 到底解决了什么问题？
 
@@ -48,7 +48,7 @@
 
 在 9 条 General/Technical/Billing 样本上，全量注入平均 `3507` 字符，Dynamic Skills 平均 `1238.56` 字符，减少 `64.68%`；无关 Skill 数从平均 `2.0` 降到 `0`，必要 Skill 覆盖率为 `1.0000`。这是本轮较强的结构证据。
 
-Rule Compliance 和回答质量因模型不可用而未执行，所以不能进一步声称动态注入让答案更准确。
+回答级 Rule Compliance 未执行，所以不能进一步声称动态注入让答案更准确；这属于保留的小范围证据边界，不影响 prompt 缩减结论。
 
 ### Q8. Tool Cache / Timeout / Breaker / Fallback 分别解决什么真实故障？
 
@@ -67,12 +67,12 @@ Rule Compliance 和回答质量因模型不可用而未执行，所以不能进�
 
 可以说：
 
-1. Direct Retrieval 在当前中文演示知识上只有 `Recall@5=0.5227`、`MRR=0.2303`，存在做 rewrite/rerank 的真实动机，但当前优化效果待补测。
+1. Direct Retrieval 在当前中文演示知识上只有 `Recall@5=0.5227`、`MRR=0.2303`；四组 RAG 已补跑，但结构化输出失败使优化链路退化，指标没有提升。
 2. Current 路由在手工标注的 12 条角色覆盖数据上达到 `1.0000`，而 General-only 为 `0.1667`、Primary-only 为 `0.7917`。
 3. Dynamic Skills 将平均 prompt 字符减少 `64.68%`，同时保持必要 Skill 覆盖。
 4. Tool 治理在缓存、超时、异常、连续故障和恢复注入下均表现出预期保护行为。
 
-不能说：三路 Intent 已优于 LLM Only、Rewrite 已解决 Direct 的 10 个坏案例、Rerank 已提升 MRR、多 Agent 已提高回答质量、分层 Memory 已提高事实保留、Judge 已稳定区分回答。这些都因模型 401 或端到端条件不足而未执行。
+不能说：三路 Intent 已优于 LLM Only、Rewrite 已解决 Direct 的 10 个坏案例、Rerank 已提升 MRR、多 Agent 已提高回答质量或分层 Memory 已提高事实保留。Judge 27 次调用中仅 10 次有效；聚合均分能区分高/中/低质量，但重复稳定性尚不足。
 
 ---
 
@@ -85,21 +85,21 @@ Rule Compliance 和回答质量因模型不可用而未执行，所以不能进�
 | 证据等级 | 结论 |
 |---|---|
 | 较强、已执行 | 路由的角色关注点覆盖；Dynamic Skills 的 prompt 缩减与污染减少；Tool 生命周期可靠性 |
-| 有问题证据、无优化效果证据 | Direct RAG 的召回与排序较弱，证明有优化动机；Rewrite/Rerank 效果未执行 |
-| 仍是工程假设 | Intent Fusion 增益与权重；分层 Memory 效果；多 Agent 回答质量；Judge 稳定性 |
+| 已执行但暴露兼容性问题 | Intent LLM 分支、四组 RAG、Judge 调用均已真实发起；结构化输出截断导致大量 fallback |
+| 仍是工程假设 | 分层 Memory 效果；多 Agent 回答质量；回答级 Skills 合规性；Judge 重复稳定性 |
 
-最重要的硬结论不是“当前设计全部正确”，而是：**项目已经具备几个合理的复杂机制，但对 LLM 依赖最强的设计还缺少可复现的效果证据；当前模型鉴权失败是完成这些证据链的直接阻塞项。**
+最重要的硬结论不是“当前设计全部正确”，而是：**LLM 网络与鉴权已正常，当前主要阻塞已经从 401 转为推理模型在 256 Token 预算下无法稳定输出最终 JSON。系统机制存在，但运行时会安全退化，收益尚未兑现。**
 
 ## 2. Test Environment
 
 | 项目 | 实测值 |
 |---|---|
-| Commit | `b27f122f918a42485afb300dacb6d547de47bd40` |
+| Commit | `f9c2afc4ffa620a34415fab159555a0892d1a7f9`（测试分支基线） |
 | Python | `3.9.6` |
-| 执行时间 | `2026-08-20T00:12:48+08:00` 至 `2026-08-20T00:12:57+08:00` |
+| 执行时间 | 2026-08-20（最终补测） |
 | LLM Provider | `api.deepseek.com` |
 | Model | `deepseek-v4-pro` |
-| 模型预检 | `AuthenticationError，HTTP 401` |
+| 模型预检 | 成功；`955.395ms`，输入 88 / 输出 8 Token |
 | Redis | TCP 可连接 |
 | ChromaDB | TCP 可连接 |
 | 当前 Intent 模式 | 第三方端点：LLM 85% + Pattern 15%，Embedding 关闭 |
@@ -178,10 +178,12 @@ flowchart TD
 
 | 版本 | 状态 | 原因 |
 |---|---|---|
-| V0 LLM Only | NOT EXECUTED / 未执行 | 模型预检 HTTP 401 |
-| V1 LLM + Pattern | NOT EXECUTED / 未执行 | 没有有效 LLM 分支输出 |
-| V2 LLM + Embedding | NOT EXECUTED / 未执行 | 没有有效 LLM 分支输出 |
-| Current Fusion | NOT EXECUTED / 未执行 | 不能用 LLM failure fallback 冒充正常 Current |
+| V0 LLM Only | PARTIALLY EXECUTED | Accuracy 0.5556，Macro-F1 0.5599 |
+| V1 LLM + Pattern | PARTIALLY EXECUTED | Accuracy 0.5333，Macro-F1 0.5354 |
+| V2 LLM + Embedding | PARTIALLY EXECUTED | Accuracy 0.5556，Macro-F1 0.5599 |
+| Current Fusion | PARTIALLY EXECUTED | Accuracy 0.5333，Macro-F1 0.5354 |
+
+47 次 LLM 分类调用中 26 次成功解析、21 次失败；失败按正式实现退化为 `OTHER`。因此这些数字是“当前配置端到端运行表现”，不是模型纯语义能力上限。
 
 ### 6.2 可执行的组件诊断
 
@@ -200,13 +202,13 @@ Pattern 分组 Accuracy：clear `0.6316`、paraphrase `0.3684`、context-depende
 
 ### 6.3 Weight Ablation
 
-`0.9/0.05/0.05`、`0.8/0.1/0.1`、`0.7/0.2/0.1`、`0.6/0.3/0.1`、`0.6/0.2/0.2` 均 `NOT EXECUTED / 未执行`。原因是没有有效 LLM 输出；权重比较若混用失败输出没有意义。
+五组权重已基于同一批分支输出执行。由于近半 LLM 输出失败，结果只证明权重不是当前主要瓶颈；结构化输出可靠性优先级高于继续微调 70/20/10 或 85/15。
 
 因此当前 70/20/10 和 85/15 都只能描述为**经验初始化**，不能描述为实验最优。
 
 ### 6.4 Intent Bad Cases
 
-由于 LLM Only 和 Current 都未执行，本轮没有生成“LLM 错、Current 对”或“LLM 对、Current 错”的真实对照案例。组件级逐样本预测保存在 `intent_ablation.json`，但不升级为设计效果结论。
+LLM Only 与 Current 已产生逐样本对照；整体上 Current 略低于 LLM Only，说明不能用本轮结果宣称 Fusion 有净增益。详细预测与真实 fallback 均保存在 `intent_ablation.json`。
 
 ## 7. RAG Ablation
 
@@ -214,10 +216,10 @@ Pattern 分组 Accuracy：clear `0.6316`、paraphrase `0.3684`、context-depende
 
 | 版本 | Recall@1 | Recall@3 | Recall@5 | MRR | P50 ms | P95 ms |
 |---|---:|---:|---:|---:|---:|---:|
-| Direct Retrieval | 0.0909 | 0.3636 | 0.5227 | 0.2303 | 124.672 | 132.412 |
-| + Query Rewrite | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED |
-| + Rewrite + Rerank | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED |
-| Rerank Only | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED |
+| Direct Retrieval | 0.0909 | 0.3636 | 0.5227 | 0.2303 | 140.066 | 155.128 |
+| + Query Rewrite | 0.0909 | 0.3636 | 0.5227 | 0.2303 | 6046.429 | 6733.833 |
+| + Rewrite + Rerank | 0.0909 | 0.3636 | 0.5227 | 0.2303 | 6053.851 | 6848.907 |
+| Rerank Only | 0.0909 | 0.3636 | 0.5227 | 0.2303 | 5421.116 | 6081.345 |
 
 样本：22 条有答案、3 条无答案。无答案查询在不加拒答阈值的 Direct Top-5 中都返回了内容，比例 `1.0000`，说明“检索有返回”绝不能直接等价于“知识命中”。这也支持当前 API 层对最低分和 fallback 标志进行过滤的必要性。
 
@@ -242,11 +244,11 @@ Pattern 分组 Accuracy：clear `0.6316`、paraphrase `0.3684`、context-depende
 
 ### 7.3 Query Rewrite 的真实结论边界
 
-要求中的“至少 5 个 Direct 失败、Rewrite 成功”和“至少 3 个 Rewrite 无收益/变差”均未生成，因为 Rewrite 调用依赖已失效的模型鉴权。当前 `MCPToolManager.rewrite_query` 在失败时会返回原查询；若直接跑完全链路，结果会静默退化成 Direct，形成虚假对比。因此本轮主动阻止了这种误报。
+25 次 Rewrite 调用仅 1 次产生多查询，24 次回退原查询；24 次以 `max_tokens` 停止，23 次完全没有 text 块。没有出现可证明的 Direct 失败、Rewrite 成功案例。代价却真实存在：每查询增加 1 次 LLM 调用，P95 从 `155.128ms` 上升到 `6733.833ms`。
 
 ### 7.4 Rerank 的真实结论边界
 
-Rerank 同样未执行。代码层面可以确认它只接收召回后的候选并排序，因此预期主要影响 MRR/Top-1，而不是候选 Recall；实际 before/after rank 案例仍待补测。
+Rerank Only 共发起 25 次 LLM 调用，全部在 256 Token 上限结束且没有最终文本，正式逻辑返回原顺序，因此 MRR 和 Recall 均未变化。Current 版本因 Rewrite 大多回退、候选数不超过 Top-K，只触发了 1 次实际 Rerank 调用。这是有效的运行时负结果，而不是未执行。
 
 ## 8. Multi-Agent Ablation
 
@@ -325,7 +327,9 @@ Single General、Primary Only、Current Multi-Agent 的实际回答没有生成�
 
 已建立 3 组高/中/低质量受控答案，覆盖 401、重复扣款和 500。计划每个答案重复评测 3–5 次并输出 Relevance、Accuracy、Completeness、Helpfulness、方差与范围。
 
-本轮全部 `NOT EXECUTED / 未执行`。原因是模型 HTTP 401。当前 `Evaluator` 在 Judge 异常时返回 0.5 并设置 `judge_failed=True`；本轮没有把这些 fallback 0.5 当真实评分。
+本轮发起 27 次真实 Judge 调用，其中 10 次获得可解析评分、17 次因 `max_tokens` 截断失败；失败调用未使用 fallback 0.5。有效结果的聚合 Overall 均分为：高质量 `0.9725`、中质量 `0.6625`、低质量 `0.1375`，方向正确；但没有任何一个问题完成全部 9 次预定重复评分，因此不能宣称稳定性已经通过。
+
+Judge 基准将预算临时提高到 1024，正式 Evaluator 仍是 256。即使提高后成功率也只有 `37.04%`，P50 单次调用约 `20.0s`，说明它目前适合作为实验性回归信号，不适合作为稳定门禁。
 
 Judge 的正确定位是自动化回归信号，不是绝对 ground truth。恢复后还需要检查：
 
@@ -336,23 +340,24 @@ Judge 的正确定位是自动化回归信号，不是绝对 ground truth。恢�
 
 ## 13. Design Motivation Bad Case Catalog
 
-汇总文件共保存 35 条真实观察：
+自动汇总文件保存 29 条机制对照观察；报告另外保留 10 条 Direct Top-5 漏召回诊断：
 
 | Feature | 数量 | 证据含义 |
 |---|---:|---|
-| Direct Retrieval | 10 | Direct Top-5 漏召回；Current 未执行，不能声称修复 |
+| Intent Fusion | 1 | Current 相对 LLM-only 的真实退化案例 |
 | Primary / Supporting 路由 | 15 | 两个基线在若干样本漏角色，而 Current 覆盖；同一请求可能对应两个基线案例 |
 | Dynamic Skills | 5 | 全量注入有 2 个无关 Skill，Current 为 0 |
+| LLM-as-Judge | 3 | 每组受控答案都未完成完整重复覆盖 |
 | Cache | 1 | 重复 handler 调用减少 |
 | Timeout/Fallback | 2 | 慢与永久阻塞得到保护 |
 | Fallback | 1 | handler 异常被结构化封装 |
 | Circuit Breaker | 1 | 连续失败后阻断并恢复 |
 
-下面逐条解释全部 35 个 Bad Case。这里的“坏案例”包括两类：一类是真实失败，例如 Direct Retrieval 没把 gold 文档召回；另一类是重建基线缺少当前机制时出现的结构缺口，例如 General-only 没有覆盖 technical 角色。它们都不代表曾在线上发生过。
+下面解释自动汇总案例和 10 条 RAG 诊断。这里的“坏案例”包括真实运行失败和重建基线的结构缺口；它们都不代表曾在线上发生过。
 
 ### 13.1 Direct Retrieval：10 个 Top-5 漏召回案例
 
-所有 RAG 案例的 Current Rewrite/Rerank 结果都是 `NOT EXECUTED`。因此下表只证明 Direct Retrieval 存在问题，不能证明当前链路已经修复。
+所有 RAG 版本均已尝试执行，但 Rewrite/Rerank 大量发生结构化输出回退；因此下表证明 Direct Retrieval 存在问题，也证明当前运行配置尚未兑现优化收益。
 
 | Bad Case | 输入 | Gold 文档 | Direct Top-5 | 观察与可能原因 |
 |---|---|---|---|---|
@@ -417,12 +422,12 @@ Judge 的正确定位是自动化回归信号，不是绝对 ground truth。恢�
 
 ### 13.5 没有生成 Bad Case 的部分
 
-- Intent Fusion：LLM Only 与 Current 均未执行，所以没有真实的“LLM 错、Current 对”或“Current 反而变差”案例。
-- Query Rewrite：没有有效 rewrite queries，所以没有“Direct 失败、Rewrite 成功”或“Rewrite query drift”案例。
-- Rerank：没有 before/after rank，所以没有“升排”或“错降”案例。
+- Intent Fusion：已运行，但 21/47 次结构化输出失败；Current 指标略低于 LLM Only。
+- Query Rewrite：已运行，24/25 次回退原查询，没有产生召回增益案例。
+- Rerank：已运行，Rerank Only 的 25 次调用全部截断并回退原顺序。
 - Multi-Agent 回答：没有实际回答与 Judge，所以没有漏答、冲突、synthesis 丢信息案例。
 - Memory：没有真实压缩和跨会话检索，所以没有事实遗忘、错误画像或历史污染案例。
-- Judge：没有重复评分，所以没有排序失败和方差过大案例。
+- Judge：10/27 次评分有效，聚合质量顺序正确，但重复覆盖不足，不能评价稳定方差。
 
 完整机器可读明细见英文文件 `evaluation/results/design_rationale/bad_cases.json`。
 
@@ -437,13 +442,13 @@ Judge 的正确定位是自动化回归信号，不是绝对 ground truth。恢�
 3. + Embedding：尝试覆盖无关键词同义表达。
 4. + Fusion：在分支互补时聚合，但权重需要校准。
 
-本轮只证明 Pattern/Embedding 的独立能力有限，没有证明 Fusion 优于 LLM Only。
+本轮实际观察到 Current Fusion 略低于 LLM Only；主要瓶颈是结构化输出失败，不能证明 Fusion 有增益。
 
 ### RAG
 
 1. Direct：简单、低调用数，但本轮 Recall@5 仅 0.5227。
-2. + Rewrite：设计上拆分术语差异和多信息需求；未执行。
-3. + Rerank：设计上改善候选顺序；未执行。
+2. + Rewrite：已执行但 24/25 次回退，Recall/MRR 不变，P95 增至约 6.7 秒。
+3. + Rerank：已执行但结构化输出全部截断，排序和指标不变。
 4. + score/fallback filter：防止“有返回即命中”；无答案样本的 Direct 返回率 1.0 支持这个边界。
 
 ### Agent
@@ -474,7 +479,7 @@ Judge 的正确定位是自动化回归信号，不是绝对 ground truth。恢�
 
 ## 16. Current Design Trade-offs
 
-1. **复杂度与证据不对称**：Intent Fusion、Rewrite/Rerank、Memory、Multi-Agent/Judge 都增加复杂度，但本轮缺少 LLM 侧效果数据。
+1. **复杂度与运行收益不对称**：Intent Fusion、Rewrite/Rerank 和 Judge 已发起真实 LLM 测试，但推理模型的最终 JSON 经常被 Token 上限截断，复杂机制大量退化。
 2. **提供方影响架构形态**：第三方 `base_url` 会关闭 Embedding，使“当前三路融合”在实际环境中并不存在。
 3. **RAG 中文基础召回偏弱**：当前默认 `all-MiniLM-L6-v2` Direct 结果较差；Rewrite 可能缓解，但不能代替适合中文/多语种的 embedding 选型验证。
 4. **规则对关键词敏感**：Intent Pattern、路由复合检测和 Skills 选择都依赖词表，否定、金额和错误码可能产生误判。
@@ -513,17 +518,17 @@ Cache、Timeout、Fallback、Breaker 和 Recovery 均通过 Fake Tool 故障注�
 
 | 设计/参数 | 当前状态 | 为什么仍是 heuristic |
 |---|---|---|
-| Intent Fusion 是否优于 LLM Only | 未证明 | LLM 401 |
-| 70/20/10 与 85/15 | 未校准 | Weight Ablation 未执行 |
+| Intent Fusion 是否优于 LLM Only | 本轮未优于 | 44.68% LLM JSON 解析失败，Current 0.5333 < LLM-only 0.5556 |
+| 70/20/10 与 85/15 | 已跑但未校准 | 结构化输出可靠性主导结果 |
 | confidence 0.5 | 未校准 | 没有 threshold curve |
-| Query Rewrite | 有动机、无效果证据 | Direct 差，但 Rewrite 未执行 |
-| Rerank | 机制合理、无效果证据 | 无 before/after rank |
+| Query Rewrite | 已运行、无增益 | 24/25 回退原查询，Recall/MRR 不变 |
+| Rerank | 已运行、无增益 | 25/25 输出截断并回退原排序 |
 | RAG score 0.20 / Top-K | 未校准 | 无 precision-recall/拒答曲线 |
 | supporting score 0.45 / ratio 0.55 | 仅小样本吻合 | 路由数据集与规则同源 |
 | Multi-Agent Synthesis | 未证明 | 回答/Judge 未执行 |
 | Memory 15/5/24h | 未证明 | 没有长对话保留率 |
 | Tool 30s / 5 failures / 60s | 机制通过、参数未优化 | 故障注入使用缩短时间 |
-| Judge 阈值与稳定性 | 未证明 | Judge 未执行 |
+| Judge 阈值与稳定性 | 部分证明 | 聚合质量顺序正确，但仅 10/27 调用有效 |
 
 ## 19. Interview Story Candidates
 
@@ -663,7 +668,7 @@ Original Query → ChromaDB Top-K。
 
 #### Result
 
-**NOT EXECUTED / 未执行**：不能说当前链路已提升 Recall 或 MRR。
+**实测负结果**：当前链路没有提升 Recall 或 MRR，主要原因是结构化输出截断后安全回退。
 
 #### Trade-off
 
@@ -675,11 +680,13 @@ Original Query → ChromaDB Top-K。
 
 - 路由关注点角色覆盖率：0.1667 / 0.7917 / 1.0000。
 - Dynamic Skills 平均 prompt 字符减少率：64.68%。
-- Direct RAG：Recall@1 0.0909、Recall@3 0.3636、Recall@5 0.5227、MRR 0.2303、P95 132.412ms。
+- Direct RAG：Recall@1 0.0909、Recall@3 0.3636、Recall@5 0.5227、MRR 0.2303、P95 155.128ms。
+- Rewrite/Current/Rerank-only：指标与 Direct 相同；P95 分别约 6.73s、6.85s、6.08s。
+- Judge 有效聚合 Overall：高 0.9725、中 0.6625、低 0.1375；成功调用 10/27。
 - 无答案 Direct Top-5 返回率：1.0，说明需要命中语义过滤。
 - Tool：重复调用 2→1；5 次失败后第 6 次不再打 handler；恢复后 CLOSED。
 
-讨论时必须同时给限制：样本小、人工标注、路由数据集与规则同源、模型 401、端到端质量未执行、延迟只代表本机隔离环境。
+讨论时必须同时给限制：样本小、人工标注、路由数据集与规则同源、推理模型结构化输出截断、端到端回答质量未执行、延迟只代表本机隔离环境。
 
 不适合讨论为“效果提升”的指标：Pattern-only Accuracy、Embedding-only Accuracy。它们只是组件诊断，没有 LLM-only 对照。
 
@@ -715,7 +722,7 @@ for file in evaluation/results/design_rationale/*.json; do
 done
 ```
 
-补跑完整 LLM 消融前，先修复 `.env` 中模型与密钥，使最小 `messages.create` 不再返回 401。补跑后仍应检查 `judge_failed`，不能把 fallback 分数计入 Judge 指标。
+最小 LLM 调用当前已成功。复现时仍应检查结构化输出的 `stop_reason`、空 text 块和 `judge_failed`，不能把 fallback 预测、原查询或 0.5 分数当作正常结果。
 
 ## 22. Raw Results Appendix
 
@@ -746,14 +753,14 @@ done
 | 文件 | 状态 |
 |---|---|
 | intent_ablation.json | PARTIALLY EXECUTED / 部分执行 |
-| intent_weight_ablation.json | NOT EXECUTED / 未执行 |
+| intent_weight_ablation.json | EXECUTED / 已执行（受 LLM 解析失败影响） |
 | rag_ablation.json | PARTIALLY EXECUTED / 部分执行 |
 | routing_ablation.json | EXECUTED / 已执行 |
 | multi_agent_ablation.json | NOT EXECUTED / 未执行 |
 | memory_ablation.json | PARTIALLY EXECUTED / 部分执行 |
 | skills_ablation.json | PARTIALLY EXECUTED / 部分执行 |
 | tool_reliability.json | EXECUTED / 已执行 |
-| judge_reliability.json | NOT EXECUTED / 未执行 |
+| judge_reliability.json | PARTIALLY EXECUTED / 部分执行（10/27 有效） |
 | bad_cases.json | EXECUTED / 已执行 |
 
 中文报告负责完整解释测试设计、指标、限制与全部 Bad Case；数据集 schema、基准脚本、结果字段、状态说明和机器可读结论均为英文。JSON 中保留的中文仅是被测用户语句、知识标题、知识正文和候选回答，因为它们属于 RelayDesk 中文业务语料，而不是工件说明语言。
