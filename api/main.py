@@ -77,6 +77,20 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _build_embedding_function():
+    """构造 Intent 与 RAG 共用的本地中文 Embedding。"""
+    from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
+
+    model = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5").strip()
+    device = os.getenv("EMBEDDING_DEVICE", "cpu").strip()
+    function = SentenceTransformerEmbeddingFunction(
+        model_name=model,
+        device=device,
+        normalize_embeddings=True,
+    )
+    return model, device, function
+
+
 def _require_admin_key(
     provided_key: Optional[str] = Header(default=None, alias="X-RelayDesk-Admin-Key"),
 ) -> None:
@@ -106,11 +120,16 @@ async def lifespan(app: FastAPI):
     cfg = _anthropic_cfg()
     logger.info(f"模型: {cfg['model']}  base_url: {cfg.get('base_url', '(官方)')}")
 
+    # Intent 与 RAG 共用同一个本地中文 Embedding 实例，与 LLM Provider 解耦。
+    embedding_model, embedding_device, embedding_function = _build_embedding_function()
+    logger.info(f"Embedding: {embedding_model}  device: {embedding_device}")
+
     # 意图识别器（Orchestrator 内部也会创建，这里单独暴露给 Evaluator）
     recognizer = IntentRecognizer(
         api_key=cfg["api_key"],
         base_url=cfg.get("base_url"),
         model=cfg["model"],
+        embedding_function=embedding_function,
     )
 
     # Skills：启动时从目录加载业务能力说明，并在 Agent 调用 LLM 时动态注入。
@@ -127,6 +146,7 @@ async def lifespan(app: FastAPI):
         base_url=cfg.get("base_url"),
         model=cfg["model"],
         skill_manager=_skill_manager,
+        embedding_function=embedding_function,
         llm_timeout_s=float(os.getenv("LLM_TIMEOUT_SECONDS", "30")),
         llm_max_retries=int(os.getenv("LLM_MAX_RETRIES", "1")),
     )
@@ -152,6 +172,9 @@ async def lifespan(app: FastAPI):
         chroma_host=os.getenv("CHROMA_HOST", "chromadb"),
         chroma_port=int(os.getenv("CHROMA_PORT", "8000")),
         chroma_path=os.getenv("CHROMA_PERSIST_DIRECTORY", "/app/data/chroma"),
+        embedding_function=embedding_function,
+        embedding_model=embedding_model,
+        collection_name=os.getenv("RAG_COLLECTION_NAME", "knowledge_base_bge_small_zh_v1_5"),
     )
     logger.info(f"知识库已加载: {await kb.doc_count_async()} 个文档片段")
 
@@ -392,7 +415,7 @@ async def _build_knowledge_context(message: str, intent=None, top_k: int = 3) ->
         if not result.success or not isinstance(result.data, list) or not result.data:
             return "", False
 
-        min_score = float(os.getenv("RAG_MIN_SCORE", "0.20"))
+        min_score = float(os.getenv("RAG_MIN_SCORE", "0.55"))
         parts = ["[知识库检索结果]"]
         used = False
         for i, item in enumerate(result.data[:top_k], start=1):
@@ -654,6 +677,7 @@ async def _cli():
     from core.skill_loader import SkillManager
 
     cfg = _anthropic_cfg()
+    _, _, embedding_function = _build_embedding_function()
     skill_manager = SkillManager(
         root_dir=os.getenv("RELAYDESK_SKILLS_DIR", str(pathlib.Path(_ROOT) / "skills")),
         max_prompt_chars=int(os.getenv("RELAYDESK_SKILLS_MAX_PROMPT_CHARS", "5000")),
@@ -664,6 +688,7 @@ async def _cli():
         base_url=cfg.get("base_url"),
         model=cfg["model"],
         skill_manager=skill_manager,
+        embedding_function=embedding_function,
         llm_timeout_s=float(os.getenv("LLM_TIMEOUT_SECONDS", "30")),
         llm_max_retries=int(os.getenv("LLM_MAX_RETRIES", "1")),
     )

@@ -141,8 +141,7 @@ class IntentRecognizer:
     """
     端到端意图识别器。
 
-    初始化时不加载任何本地模型，所有 AI 能力通过 Anthropic API 调用。
-    模板 Embedding 在首次请求时懒加载并缓存，后续复用。
+    可注入独立 Embedding Function；模板向量在首次请求时懒加载并缓存。
     """
 
     def __init__(
@@ -151,6 +150,7 @@ class IntentRecognizer:
         base_url: Optional[str] = None,
         model: str = "claude-3-5-sonnet-20241022",
         confidence_threshold: float = 0.5,
+        embedding_function: Optional[Any] = None,
     ):
         kwargs: Dict[str, Any] = {"api_key": api_key}
         if base_url:
@@ -158,10 +158,10 @@ class IntentRecognizer:
         self.client    = AsyncAnthropic(**kwargs)
         self.model     = model
         self.threshold = confidence_threshold
-        # 第三方兼容 API（如 DeepSeek）通常不支持 Embedding，禁用该策略。
-        # 官方 Anthropic SDK 当前没有 embeddings 资源，因此下面会使用稳定的
-        # 本地字符 n-gram 向量作为轻量兜底，保证三路融合链路真实可跑。
-        self._embedding_enabled = not bool(base_url)
+        self._embedding_function = embedding_function
+        # 显式注入的本地 Embedding 与 LLM Provider 解耦，因此 DeepSeek 等第三方
+        # 端点也可以启用三路融合。未注入时保留原兼容行为。
+        self._embedding_enabled = embedding_function is not None or not bool(base_url)
 
         self._tpl_embeddings: Dict[IntentCategory, List[List[float]]] = {}
         self._cache: Dict[str, IntentResult] = {}
@@ -406,10 +406,13 @@ class IntentRecognizer:
         """
         生成文本向量。
 
-        如果未来接入的官方/兼容客户端提供 embeddings.create，会优先使用远端向量；
-        当前 Anthropic SDK 没有该资源时，退化为字符 n-gram 哈希向量。这样不会因为
-        Embedding 服务缺失导致三路融合中断。
+        优先使用应用启动时注入的本地中文 Embedding；否则尝试兼容客户端的
+        embeddings.create，最后退化为字符 n-gram 哈希向量。
         """
+        if self._embedding_function is not None:
+            vectors = await asyncio.to_thread(self._embedding_function, [text])
+            return [float(value) for value in vectors[0]]
+
         embeddings = getattr(self.client, "embeddings", None)
         if embeddings is not None:
             try:
