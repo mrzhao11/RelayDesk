@@ -25,9 +25,8 @@ class KnowledgeBase:
     """
     基于 ChromaDB 的 RAG 知识库。
 
-    ChromaDB 内置了 Embedding 模型（all-MiniLM-L6-v2），
-    调用 add() 时自动生成向量，query() 时自动做语义匹配。
-    不需要额外调用 Anthropic Embeddings API。
+    正式应用注入独立中文 Embedding Function；未注入时保留 ChromaDB 默认
+    all-MiniLM-L6-v2，确保现有测试和调用方兼容。
     """
 
     COLLECTION_NAME = "knowledge_base"
@@ -37,6 +36,9 @@ class KnowledgeBase:
         chroma_host: str = "localhost",
         chroma_port: int = 8000,
         chroma_path: str = "./data/chroma",
+        embedding_function: Optional[Any] = None,
+        embedding_model: Optional[str] = None,
+        collection_name: Optional[str] = None,
     ):
         # 优先连接独立 ChromaDB 服务（服务端内置 embedding 模型，客户端无需下载）
         self._use_server = False
@@ -57,12 +59,21 @@ class KnowledgeBase:
                 settings=chromadb.Settings(anonymized_telemetry=False),
             )
 
-        # 使用服务端时不传 embedding_function，让服务端处理
-        # 本地模式时也不传，使用 ChromaDB 默认的（会触发模型下载）
-        self._collection = self._client.get_or_create_collection(
-            name=self.COLLECTION_NAME,
-            metadata={"description": "RelayDesk RAG 知识库"},
-        )
+        # 显式 Embedding Function 在客户端统一编码文档和查询；未注入时继续使用
+        # ChromaDB 默认模型。新模型使用独立 collection，避免新旧向量混用。
+        metadata: Dict[str, Any] = {"description": "RelayDesk RAG 知识库"}
+        if embedding_function is not None:
+            metadata.update({
+                "hnsw:space": "cosine",
+                "embedding_model": embedding_model or "custom",
+            })
+        collection_args: Dict[str, Any] = {
+            "name": collection_name or self.COLLECTION_NAME,
+            "metadata": metadata,
+        }
+        if embedding_function is not None:
+            collection_args["embedding_function"] = embedding_function
+        self._collection = self._client.get_or_create_collection(**collection_args)
 
         # 如果知识库为空，导入企业统一服务台演示知识。
         if self._collection.count() == 0:

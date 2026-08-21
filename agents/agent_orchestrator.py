@@ -315,6 +315,7 @@ class AgentOrchestrator:
         base_url: Optional[str] = None,
         model:    str = "claude-3-5-sonnet-20241022",
         skill_manager: Optional[Any] = None,
+        embedding_function: Optional[Any] = None,
         llm_timeout_s: float = 30.0,
         llm_max_retries: int = 1,
     ):
@@ -328,7 +329,12 @@ class AgentOrchestrator:
             kwargs["base_url"] = base_url
         client = AsyncAnthropic(**kwargs)
 
-        self._intent_recognizer = IntentRecognizer(api_key=api_key, base_url=base_url, model=model)
+        self._intent_recognizer = IntentRecognizer(
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+            embedding_function=embedding_function,
+        )
         self._skill_manager = skill_manager
 
         # Agent 池：每种类型可有多个实例（水平扩展）

@@ -3,7 +3,7 @@
 > 报告语言：中文  
 > 基准性质：**Reconstructed Baseline（重建基线）**  
 > 基准提交：`b27f122f918a42485afb300dacb6d547de47bd40`  
-> 执行日期：2026-08-20（Asia/Shanghai）  
+> 执行日期：2026-08-20 至 2026-08-21（Asia/Shanghai）
 > 重要边界：本文验证“当前设计相对构造基线是否合理”，不把构造基线描述为真实历史版本，不虚构线上指标、用户反馈或历史演进。
 
 ## 最前面直接回答十个问题
@@ -14,21 +14,23 @@
 
 可复现的组件诊断仍显示 Pattern 单分支 Accuracy 为 `0.4889`、Macro-F1 为 `0.4968`。本轮权重消融已执行，但结果受 44.68% 的 LLM 结构化输出失败率影响，只能解释为当前运行配置的可靠性表现，不能用于宣称权重最优。
 
-还必须纠正一个容易误讲的点：当前 `.env` 使用第三方兼容端点，因此正式代码会关闭 Embedding，实际融合是 **LLM 85% + Pattern 15%**，不是三路 70/20/10。只有不设置第三方 `base_url` 时，代码才启用本地 Embedding 并采用 70/20/10。
+本次已接入与 LLM Provider 解耦的 `BAAI/bge-small-zh-v1.5`。即使 `.env` 使用 DeepSeek 兼容端点，正式代码也会执行 **LLM 70% + Embedding 20% + Pattern 10%**。Embedding-only 组件诊断中，BGE Accuracy/Macro-F1 为 `0.4667/0.4412`，高于原字符 n-gram 的 `0.2889/0.2520`；但仍低于本轮可解析的 LLM-only 总体结果，不能把 Embedding 单分支当作主分类器，也尚未重跑新的 LLM 三路端到端 Accuracy。
 
 ### Q2. 相比 Direct ChromaDB Retrieval，Query Rewrite 到底解决了哪些真实 Bad Cases？
 
-**四组 RAG 已按正式参数真实运行，但当前 Query Rewrite 没有提高召回。** 25 次 Rewrite 调用只有 1 次生成有效多查询，24 次因 `max_tokens` 截断回退为原查询。因此 Direct、Rewrite、Current Rewrite+Rerank、Rerank Only 的 Recall@1/3/5 和 MRR 全部相同，分别为 `0.0909/0.3636/0.5227/0.2303`。
+旧 `all-MiniLM-L6-v2` 基线下，四组 RAG 已按正式参数真实运行，但 Query Rewrite 没有提高召回。25 次 Rewrite 调用只有 1 次生成有效多查询，24 次因 `max_tokens` 截断回退为原查询，因此四组 Recall@1/3/5 和 MRR 全部相同，为 `0.0909/0.3636/0.5227/0.2303`。
 
 为区分“机制无效”和“输出预算不兼容”，又从 Direct 漏召回中固定选取 6 个困难案例，将**评测适配器**的结构化输出下限从 256 临时提高到 4096，正式代码和配置不变。6 次 Rewrite 均成功输出查询；Direct Top-5 为 `0/6`，Rewrite Top-5 为 `3/6`，Rewrite+Rerank Top-5 为 `4/6`。其中“`forbidden`”案例从 Direct Top-5 外进入最终第 1，“秒退”“两条一样的交易”“退的钱几天回原账户”分别进入第 2/5/4。
 
-因此准确结论是：**Rewrite 对口语同义表达有可观察收益，但当前 256 Token 正式配置无法兑现；而宽泛服务范围、已开票修改公司名两个案例即使扩容仍失败。** 这 6 条是刻意选择的困难样本，不能替代 25 条正式参数主结果。
+随后新增的 BGE Direct 对照在相同 22 条有答案数据上达到 Recall@1/3/5 `0.8182/0.9091/1.0000`、MRR `0.9068`。此前 10 个 Direct Top-5 漏召回全部进入 BGE Top-5，其中 403、秒退、已开票改公司名、重复交易、退款时效等多数直接升到第 1。因此当前最高优先级结论已经改变：**先使用适合中文的 Embedding 解决基础召回，再决定是否值得承担 Rewrite/Rerank 的 LLM 延迟。** 旧 Rewrite 结果仍用于解释机制，但不代表 BGE 接入后的最新 Direct 基线。
 
 ### Q3. Rerank 主要提升 Recall 还是 Ranking Quality？
 
 从机制看，Rerank 目标仍是 **Ranking Quality / MRR**。正式参数下，Rerank Only 发起 25 次调用，全部在 256 Token 上限结束且没有最终文本，生产逻辑回退为原排序，所以 MRR 仍为 `0.2303`。
 
 6 条兼容性诊断中，Rewrite+Rerank 相比 Rewrite 将 MRR 从 `0.1583` 提到 `0.3250`，主要由 403 文档从 Top-5 外提升到第 1 驱动；但该阶段只有 3/6 次得到模型结果，另外 3 次触发 30 秒超时。Rerank Only 的 6 次则全部超时，排序完全未变。它说明 Rerank 在候选已召回时能改善顺序，也说明当前推理模型的延迟不满足在线链路要求，不能直接把 4096 设为生产修复。
+
+BGE Direct 的 MRR 已达到 `0.9068`，所以 Rerank 的边际空间明显缩小。现阶段 Rerank 应从“必须执行的默认步骤”降为“在候选接近或复合请求时再评估的可选优化”；本轮没有修改既有 Rerank 控制流，但后续不应优先投入。
 
 ### Q4. 相比 Single General Agent，Multi-Agent 到底解决了什么问题？
 
@@ -65,34 +67,34 @@
 
 本轮支持的是**机制**，不是正式参数最优性：按需 Skills 能减少 prompt；Primary + Supporting 能覆盖复合领域；Cache/Timeout/Breaker/Fallback 状态机按预期工作。
 
-以下仍主要是经验配置：Intent 的 70/20/10 或 85/15、置信度阈值 0.5、路由 supporting 阈值 0.45 和 0.55 比例、RAG 最低分 0.20、Top-K、12 秒 RAG timeout、Tool 30 秒 timeout、熔断 5 次/60 秒、Memory 15 条压缩/保留 5 条/24h TTL。不能在面试中说这些值是实验选出的最优值。
+以下仍主要是经验配置：Intent 的 70/20/10、置信度阈值 0.5、路由 supporting 阈值 0.45 和 0.55 比例、Top-K、12 秒 RAG timeout、Tool 30 秒 timeout、熔断 5 次/60 秒、Memory 15 条压缩/保留 5 条/24h TTL。BGE 的 `RAG_MIN_SCORE=0.55` 仅由当前 22 条正例和 3 条负例给出一个保守起点，不是充分校准的最优值。
 
 ### Q10. “为什么要这样设计？”当前测试能给出哪些真实、可复现的证据？
 
 可以说：
 
-1. Direct Retrieval 在当前中文演示知识上只有 `Recall@5=0.5227`、`MRR=0.2303`；四组 RAG 已补跑，但结构化输出失败使优化链路退化，指标没有提升。
+1. 将旧默认 Embedding 替换为 BGE 后，Direct Recall@5 从 `0.5227` 提升到 `1.0000`，MRR 从 `0.2303` 提升到 `0.9068`；25 条样本中 19 条排名改善、1 条退步、5 条不变。
 2. Current 路由在手工标注的 12 条角色覆盖数据上达到 `1.0000`，而 General-only 为 `0.1667`、Primary-only 为 `0.7917`。
 3. Dynamic Skills 将平均 prompt 字符减少 `64.68%`，同时保持必要 Skill 覆盖。
 4. Tool 治理在缓存、超时、异常、连续故障和恢复注入下均表现出预期保护行为。
 
-不能说：三路 Intent 已优于 LLM Only、Rewrite 已解决 Direct 的 10 个坏案例、Rerank 已提升 MRR、多 Agent 已提高回答质量或分层 Memory 已提高事实保留。Judge 27 次调用中仅 10 次有效；聚合均分能区分高/中/低质量，但重复稳定性尚不足。
+不能说：新的三路 Intent 已优于 LLM Only、BGE 在真实大规模知识库仍能保持 Recall@5=1.0、Rerank 已带来线上净收益、多 Agent 已提高回答质量或分层 Memory 已提高事实保留。Judge 27 次调用中仅 10 次有效；聚合均分能区分高/中/低质量，但重复稳定性尚不足。
 
 ---
 
 ## 1. Executive Summary
 
-本次基准对当前 RelayDesk 做了**只读设计验证**。新增内容只位于 `evaluation/benchmark/`、`evaluation/datasets/`、`evaluation/results/` 和 `docs/evaluation/`，没有修改 `core/`、`agents/`、`api/`、`memory/`、`mcp/`、`monitor/`、`skills/` 的正式实现。
+本次先完成 Current Design Rationale 只读验证，随后根据暴露出的中文检索硬伤实施最小 Embedding 改造：新增本地 BGE 依赖，让 Intent 与 RAG 共用同一模型实例，并使用独立 Chroma collection 防止新旧向量混用。API 字段、Agent、Intent 枚举、Tool 和 Memory 框架均未改变。
 
 结论分三层：
 
 | 证据等级 | 结论 |
 |---|---|
-| 较强、已执行 | 路由的角色关注点覆盖；Dynamic Skills 的 prompt 缩减与污染减少；Tool 生命周期可靠性 |
+| 较强、已执行 | BGE Direct 检索改善；路由的角色关注点覆盖；Dynamic Skills 的 prompt 缩减与污染减少；Tool 生命周期可靠性 |
 | 已执行但暴露兼容性问题 | Intent LLM 分支、四组 RAG、Judge 调用均已真实发起；结构化输出截断导致大量 fallback |
 | 仍是工程假设 | 分层 Memory 效果；多 Agent 回答质量；回答级 Skills 合规性；Judge 重复稳定性 |
 
-最重要的硬结论不是“当前设计全部正确”，而是：**LLM 网络与鉴权已正常，当前主要阻塞已经从 401 转为推理模型在 256 Token 预算下无法稳定输出最终 JSON。6 条兼容性诊断证明 Rewrite/Rerank 机制可以改变部分困难案例，但更大预算又触发 30 秒级超时；系统机制存在，生产参数下仍会安全退化，收益尚未兑现。**
+最重要的硬结论是：**原 RAG 低召回的第一瓶颈是默认 Embedding 的中文语义适配，而不是缺少更复杂的 Rewrite/Rerank。BGE 在小型固定集上以毫秒级 Direct 检索解决了旧基线的大部分问题；LLM 结构化输出和 Rerank 超时仍存在，但优先级已下降。**
 
 ## 2. Test Environment
 
@@ -100,17 +102,20 @@
 |---|---|
 | Commit | `f9c2afc4ffa620a34415fab159555a0892d1a7f9`（测试分支基线） |
 | Python | `3.9.6` |
-| 执行时间 | 2026-08-20（最终补测） |
+| 执行时间 | 2026-08-20 至 2026-08-21 |
 | LLM Provider | `api.deepseek.com` |
 | Model | `deepseek-v4-pro` |
 | 模型预检 | 成功；`955.395ms`，输入 88 / 输出 8 Token |
 | Redis | TCP 可连接 |
 | ChromaDB | TCP 可连接 |
-| 当前 Intent 模式 | 第三方端点：LLM 85% + Pattern 15%，Embedding 关闭 |
-| RAG_MIN_SCORE | 默认 `0.20` |
+| 当前 Intent 模式 | LLM 70% + BGE Embedding 20% + Pattern 10% |
+| Embedding | `BAAI/bge-small-zh-v1.5`，512 维，本地 CPU，归一化 |
+| RAG collection | `knowledge_base_bge_small_zh_v1_5`（与旧向量隔离） |
+| RAG_MIN_SCORE | 新安装默认 `0.55`；仅小样本初始校准 |
 | RAG_TIMEOUT_SECONDS | 默认 `12` |
 | LLM_TIMEOUT_SECONDS | 默认 `45` |
 | LLM_MAX_RETRIES | 默认 `2` |
+| Docker 镜像 | CPU-only PyTorch wheel 解析验证通过；完整构建因官方源下载过慢中止，未完成最终镜像产出 |
 
 安全说明：报告和结果只记录“密钥是否配置”，没有写出密钥内容。
 
@@ -277,6 +282,34 @@ Rerank Only 共发起 25 次 LLM 调用，全部在 256 Token 上限结束且没
 | 票已经开了还能换公司名称吗 | 未进 Top-5 | 未进 Top-5 | 未进 Top-5 | 查询扩写合理，但当前 embedding 仍未召回发票抬头文档 |
 
 LLM 运行细节也必须同时披露：Rewrite 6/6 正常结束且没有空文本；Rewrite 后的 Rerank 只有 3/6 完成，另外 3 次超时；Rerank Only 6/6 超时。由此得到的工程优先级是：先解决结构化输出模型/预算兼容性，再选择低延迟 Reranker 或缩小候选与输出格式；不能简单把生产 `max_tokens` 提到 4096。
+
+### 7.6 中文 Embedding 对照：旧默认模型与 BGE
+
+本轮对 `BAAI/bge-small-zh-v1.5` 做了真实下载、512 维推理、临时 Chroma 导入和 25 条 Direct Top-5 检索。旧基线逐样本结果复用已执行的 `rag_ablation.json`；BGE 使用同一批 20 篇演示知识重新编码。召回和排名可直接比较，延迟不是同轮严格对照。
+
+| 模型 | Recall@1 | Recall@3 | Recall@5 | MRR | P95 ms |
+|---|---:|---:|---:|---:|---:|
+| Chroma 默认 `all-MiniLM-L6-v2` | 0.0909 | 0.3636 | 0.5227 | 0.2303 | 155.128 |
+| `BAAI/bge-small-zh-v1.5` | 0.8182 | 0.9091 | 1.0000 | 0.9068 | 14.645 |
+
+25 条逐样本比较为：`19` 条改善、`1` 条退步、`5` 条不变。代表案例：
+
+| 查询 | 旧模型排名 | BGE 排名 |
+|---|---:|---:|
+| 能登录但是某个资源 forbidden | Top-5 外 | 第 1 |
+| 电脑端程序启动后秒退 | Top-5 外 | 第 1 |
+| 票已经开了还能换公司名称吗 | Top-5 外 | 第 1 |
+| 一笔服务出现两条一样的交易 | Top-5 外 | 第 1 |
+| 退的钱一般几天回原账户 | Top-5 外 | 第 1 |
+| 服务台能处理哪些企业问题 | Top-5 外 | 第 4 |
+| 服务多次没解决而且影响扩大 | 第 3 | 第 5（唯一退步） |
+
+边界必须同时说明：
+
+- 这是 20 篇演示知识、22 条正例的小数据集，文档和评测语料同域，`Recall@5=1.0` 不能外推到真实大库。
+- 3 条无答案查询仍都会返回候选。BGE 无答案 Top-1 分数为 `0.3677/0.4266/0.5066`，正例中最低相关 Top-1 为 `0.5596`，因此把新安装默认阈值暂设为 `0.55`；只有 3 条负例，仍需扩展阈值曲线。
+- Intent Embedding-only Accuracy/Macro-F1 从字符 n-gram 的 `0.2889/0.2520` 提升到 BGE 的 `0.4667/0.4412`，说明分支更有用但不能单独取代 LLM。否定表达、上下文依赖和相邻细粒度意图仍有明显 Bad Case。
+- 模型首次下载约 96 MB；Docker 构建阶段预下载，运行时共用一个模型实例。更换模型必须同步更换 collection 并重建向量。
 
 ## 8. Multi-Agent Ablation
 
@@ -474,10 +507,11 @@ Judge 的正确定位是自动化回归信号，不是绝对 ground truth。恢�
 
 ### RAG
 
-1. Direct：简单、低调用数，但本轮 Recall@5 仅 0.5227。
-2. + Rewrite：正式参数下 24/25 次回退，Recall/MRR 不变；6 条兼容性诊断中 Top-5 从 0/6 提到 3/6，但 P95 为约 15.56 秒。
-3. + Rerank：正式参数下全部截断；兼容性诊断出现 1 条明确排序改善，但大量请求在 30 秒超时后回退。
-4. + score/fallback filter：防止“有返回即命中”；无答案样本的 Direct 返回率 1.0 支持这个边界。
+1. 旧 Direct：简单、低调用数，但 `all-MiniLM-L6-v2` Recall@5 仅 0.5227。
+2. 中文 BGE Direct：Recall@5 1.0000、MRR 0.9068，证明先选对基础向量模型比增加 LLM 链路更重要。
+3. + Rewrite：旧基线正式参数下 24/25 次回退；扩容虽有案例收益，但 P95 约 15.56 秒。
+4. + Rerank：旧基线兼容诊断出现 1 条排序改善，但大量请求在 30 秒超时后回退；BGE 后优先级下降。
+5. + score/fallback filter：防止“有返回即命中”；BGE 的新初始阈值为 0.55，仍需更多负例校准。
 
 ### Agent
 
@@ -508,8 +542,8 @@ Judge 的正确定位是自动化回归信号，不是绝对 ground truth。恢�
 ## 16. Current Design Trade-offs
 
 1. **复杂度与运行收益不对称**：Intent Fusion、Rewrite/Rerank 和 Judge 已发起真实 LLM 测试，但推理模型的最终 JSON 经常被 Token 上限截断，复杂机制大量退化。
-2. **提供方影响架构形态**：第三方 `base_url` 会关闭 Embedding，使“当前三路融合”在实际环境中并不存在。
-3. **RAG 中文基础召回偏弱**：当前默认 `all-MiniLM-L6-v2` Direct 结果较差；Rewrite 可能缓解，但不能代替适合中文/多语种的 embedding 选型验证。
+2. **本地模型增加镜像和冷启动成本**：BGE 模型约 96 MB，并引入 PyTorch/Transformers；Docker 已预下载，但镜像会显著变大。
+3. **小数据集可能高估 BGE**：演示知识与问题同域，Recall@5 1.0 不是大规模生产效果承诺。
 4. **规则对关键词敏感**：Intent Pattern、路由复合检测和 Skills 选择都依赖词表，否定、金额和错误码可能产生误判。
 5. **Synthesis 额外增加一次 LLM 调用**：可能提升整合，也可能丢失专业细节或增加延迟。
 6. **Memory 错误会放大**：错误摘要和画像可能跨轮次持续影响答案。
@@ -542,16 +576,25 @@ Cache、Timeout、Fallback、Breaker 和 Recovery 均通过 Fake Tool 故障注�
 
 3 条无答案查询的 Direct Top-5 返回率是 1.0。这个结果强烈支持最低分过滤、fallback 过滤和 `knowledge_used` 语义边界。
 
+### 17.5 中文 Embedding 的检索收益
+
+- Direct Recall@5：0.5227 → 1.0000。
+- Direct MRR：0.2303 → 0.9068。
+- 25 条样本：19 改善、1 退步、5 不变。
+- Intent Embedding-only Accuracy：0.2889 → 0.4667。
+
+证据范围：固定小型演示集上的组件对照，不含大库吞吐、线上用户分布或新的端到端三路 Intent Fusion。
+
 ## 18. Designs Still Mainly Based on Engineering Heuristics
 
 | 设计/参数 | 当前状态 | 为什么仍是 heuristic |
 |---|---|---|
 | Intent Fusion 是否优于 LLM Only | 本轮未优于 | 44.68% LLM JSON 解析失败，Current 0.5333 < LLM-only 0.5556 |
-| 70/20/10 与 85/15 | 已跑但未校准 | 结构化输出可靠性主导结果 |
+| 70/20/10 | 新 Embedding 已接入，融合未重跑 | 结构化输出可靠性仍可能主导端到端结果 |
 | confidence 0.5 | 未校准 | 没有 threshold curve |
 | Query Rewrite | 正式参数无增益；兼容诊断有增益 | 24/25 回退；扩容后 6 条困难样本有 3 条进入 Top-5，但延迟不可接受 |
 | Rerank | 正式参数无增益；兼容诊断有单例增益 | 正式参数 25/25 截断；扩容后有 1 条升至第 1，但 30 秒超时频繁 |
-| RAG score 0.20 / Top-K | 未校准 | 无 precision-recall/拒答曲线 |
+| RAG score 0.55 / Top-K | 初始小样本支持 | 仅 3 条无答案负例，没有充分 precision-recall/拒答曲线 |
 | supporting score 0.45 / ratio 0.55 | 仅小样本吻合 | 路由数据集与规则同源 |
 | Multi-Agent Synthesis | 未证明 | 回答/Judge 未执行 |
 | Memory 15/5/24h | 未证明 | 没有长对话保留率 |
@@ -668,7 +711,7 @@ Cache + Timeout + Breaker + Fallback。
 
 fallback 可能隐藏真实失败，必须带标志；参数过松或过严都会造成问题。
 
-### Story D：为什么 RAG 需要 Rewrite/Rerank（谨慎版）
+### Story D：为什么先改 Embedding，再评估 Rewrite/Rerank
 
 #### 背景
 
@@ -688,11 +731,11 @@ Original Query → ChromaDB Top-K。
 
 #### Design Choice
 
-当前代码使用 Query Rewrite、多查询召回、去重、Rerank。
+先把默认英文向量模型替换为 BGE 中文 Embedding；保留 Query Rewrite、多查询召回、去重、Rerank 作为兼容能力。
 
 #### Why
 
-机制上 Rewrite 扩大候选视角，Rerank 改善顺序。
+基础 Embedding 决定候选集合上限；Rewrite 扩大候选视角，Rerank 改善候选内顺序。
 
 #### Result
 
@@ -700,9 +743,11 @@ Original Query → ChromaDB Top-K。
 
 **兼容性诊断**：在 6 条 Direct 全部漏召回的困难样本上，仅提高 benchmark 输出预算后，Rewrite 命中 3 条，Rewrite+Rerank 命中 4 条；403 案例升到第 1。但 Rewrite P95 约 15.56 秒，完整链路 P95 约 57.21 秒，不能作为生产参数建议。
 
+**Embedding 改造结果**：BGE Direct 在 22 条有答案样本上 Recall@5 为 1.0000、MRR 为 0.9068；旧模型的 10 条 Top-5 漏召回全部进入 Top-5。它以更低复杂度覆盖了原本希望 Rewrite/Rerank 解决的大部分问题。
+
 #### Trade-off
 
-增加 LLM 调用、延迟、token 成本和 query drift 风险。
+本地 BGE 增加依赖、镜像体积和首次加载成本；新相似度分布需要重校阈值。继续启用 Rewrite/Rerank 还会增加 LLM 调用、延迟、token 成本和 query drift 风险。
 
 ## 20. Metrics Suitable for Interview Discussion
 
@@ -711,15 +756,17 @@ Original Query → ChromaDB Top-K。
 - 路由关注点角色覆盖率：0.1667 / 0.7917 / 1.0000。
 - Dynamic Skills 平均 prompt 字符减少率：64.68%。
 - Direct RAG：Recall@1 0.0909、Recall@3 0.3636、Recall@5 0.5227、MRR 0.2303、P95 155.128ms。
+- BGE Direct RAG：Recall@1 0.8182、Recall@3 0.9091、Recall@5 1.0000、MRR 0.9068；25 条中 19 改善、1 退步、5 不变。
+- Intent Embedding-only：字符 n-gram Accuracy/Macro-F1 0.2889/0.2520，BGE 为 0.4667/0.4412。
 - Rewrite/Current/Rerank-only：指标与 Direct 相同；P95 分别约 6.73s、6.85s、6.08s。
 - 兼容性诊断（6 条定向困难样本、非总体指标）：Direct Top-5 0/6，Rewrite 3/6，Rewrite+Rerank 4/6；Rerank 阶段频繁触发 30 秒超时。
 - Judge 有效聚合 Overall：高 0.9725、中 0.6625、低 0.1375；成功调用 10/27。
 - 无答案 Direct Top-5 返回率：1.0，说明需要命中语义过滤。
 - Tool：重复调用 2→1；5 次失败后第 6 次不再打 handler；恢复后 CLOSED。
 
-讨论时必须同时给限制：样本小、人工标注、路由数据集与规则同源、推理模型结构化输出截断、端到端回答质量未执行、延迟只代表本机隔离环境。
+讨论时必须同时给限制：样本小且知识与问题同域、人工标注、只有 3 条无答案负例、路由数据集与规则同源、推理模型结构化输出截断、端到端回答质量未执行、延迟只代表本机隔离环境。
 
-不适合讨论为“效果提升”的指标：Pattern-only Accuracy、Embedding-only Accuracy。它们只是组件诊断，没有 LLM-only 对照。
+Embedding-only Accuracy 可以作为“向量分支本身得到改善”的组件指标，但不能用来宣称新的三路 Fusion 已优于 LLM-only；新的端到端融合尚未重跑。
 
 ## 21. Reproduction Commands
 
@@ -741,6 +788,14 @@ TOKENIZERS_PARALLELISM=false \
 python3 evaluation/benchmark/run_rag_compatibility_examples.py
 ```
 
+复现中文 Embedding 对照（首次运行需要下载模型）：
+
+```bash
+TMPDIR=/tmp \
+TOKENIZERS_PARALLELISM=false \
+python3 evaluation/benchmark/run_embedding_ablation.py
+```
+
 验证脚本、Python 核心文件和结果 JSON：
 
 ```bash
@@ -748,6 +803,7 @@ PYTHONPYCACHEPREFIX=/tmp/relaydesk-design-pycache \
 python3 -m py_compile \
   evaluation/benchmark/run_design_rationale.py \
   evaluation/benchmark/run_rag_compatibility_examples.py \
+  evaluation/benchmark/run_embedding_ablation.py \
   api/main.py \
   core/intent_recognizer.py \
   core/skill_loader.py \
@@ -773,6 +829,7 @@ done
 - `evaluation/results/design_rationale/intent_weight_ablation.json`
 - `evaluation/results/design_rationale/rag_ablation.json`
 - `evaluation/results/design_rationale/rag_compatibility_examples.json`
+- `evaluation/results/design_rationale/embedding_ablation.json`
 - `evaluation/results/design_rationale/routing_ablation.json`
 - `evaluation/results/design_rationale/multi_agent_ablation.json`
 - `evaluation/results/design_rationale/memory_ablation.json`
@@ -798,6 +855,7 @@ done
 | intent_weight_ablation.json | EXECUTED / 已执行（受 LLM 解析失败影响） |
 | rag_ablation.json | PARTIALLY EXECUTED / 部分执行 |
 | rag_compatibility_examples.json | EXECUTED / 已执行（6 条定向兼容性诊断） |
+| embedding_ablation.json | EXECUTED / 已执行（BGE RAG + Intent Embedding-only） |
 | routing_ablation.json | EXECUTED / 已执行 |
 | multi_agent_ablation.json | NOT EXECUTED / 未执行 |
 | memory_ablation.json | PARTIALLY EXECUTED / 部分执行 |
