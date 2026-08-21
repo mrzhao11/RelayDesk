@@ -2,10 +2,10 @@
 
 # ── AI / LLM ──────────────────────────────────────────────────────────────────
 anthropic==0.40.0          # LLM 调用；意图 Embedding 分支支持远端客户端，缺失时本地兜底
-sentence-transformers==3.3.1  # 本地中文 Embedding（Intent + RAG 共用）
+sentence-transformers==4.1.0  # Qwen3 Embedding（Intent + RAG 共用）
 torch==2.5.1                  # CPU 推理；Docker 从 PyTorch CPU index 安装
-transformers==4.46.3          # 与 ChromaDB 0.5.23 的 tokenizers 上限兼容
-tokenizers==0.20.3
+transformers==4.51.3          # Qwen3 model type requires Transformers >= 4.51
+tokenizers==0.21.1
 
 # ── Web 框架 ──────────────────────────────────────────────────────────────────
 fastapi==0.115.5
@@ -15,7 +15,7 @@ python-multipart==0.0.12    # FastAPI 文件上传支持
 
 # ── 数据存储 ──────────────────────────────────────────────────────────────────
 redis==5.2.1
-chromadb==0.5.23           # 向量数据库（长期记忆）
+chromadb==0.6.3            # 支持新版 tokenizers，现有 collection API 保持兼容
 
 # ── 监控 ──────────────────────────────────────────────────────────────────────
 prometheus-client==0.21.1

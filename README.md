@@ -79,10 +79,12 @@ RELAYDESK_ADMIN_KEY=replace_with_a_long_random_value
 ```env
 LLM_TIMEOUT_SECONDS=30
 LLM_MAX_RETRIES=1
-EMBEDDING_MODEL=BAAI/bge-small-zh-v1.5
+EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
 EMBEDDING_DEVICE=cpu
-RAG_COLLECTION_NAME=knowledge_base_bge_small_zh_v1_5
-RAG_MIN_SCORE=0.55
+EMBEDDING_QUERY_PROMPT=query
+EMBEDDING_QUERY_INSTRUCTION=Given an enterprise service desk request, retrieve the most relevant policy or troubleshooting passage that answers the request
+RAG_COLLECTION_NAME=knowledge_base_qwen3_embedding_0_6b
+RAG_MIN_SCORE=0.45
 RAG_TIMEOUT_SECONDS=20
 CORS_ORIGINS=http://localhost,http://localhost:5173,http://127.0.0.1:5173
 ```
@@ -97,9 +99,10 @@ ANTHROPIC_API_KEY=your_deepseek_key
 
 Embedding 与 LLM Provider 解耦：即使 LLM 使用 DeepSeek 兼容端点，Intent 仍会执行
 `LLM 70% + Embedding 20% + Pattern 10%` 三路融合，RAG 也使用同一个中文模型。
-首次运行会下载约 96 MB 模型。更换 `EMBEDDING_MODEL` 时必须同时更换
+首次运行会下载约 1.2 GB 模型。RAG 查询使用企业服务台专用英文 instruction，
+文档和 Intent 模板不添加检索 instruction。更换 `EMBEDDING_MODEL` 时必须同时更换
 `RAG_COLLECTION_NAME`，让知识库在新 collection 中重新导入，不能混用不同维度的向量。
-`RAG_MIN_SCORE=0.55` 是基于当前 22 条有答案、3 条无答案样本得到的保守起点，
+`RAG_MIN_SCORE=0.45` 是基于当前 22 条有答案、3 条无答案样本得到的保守起点，
 不是通用最优值；知识规模或模型变化后必须重新校准。
 
 Docker Compose 场景下，Redis 和 ChromaDB 的连接由 `docker-compose.yml` 覆盖为容器内地址。通常不需要手动改：
@@ -700,7 +703,7 @@ RelayDesk 使用了三个 ChromaDB collection：
 
 | Collection | 模块 | 作用 |
 |------------|------|------|
-| `knowledge_base_bge_small_zh_v1_5` | `mcp/knowledge_base.py` | 使用 BGE 中文 Embedding 的 RAG 知识库文档片段 |
+| `knowledge_base_qwen3_embedding_0_6b` | `mcp/knowledge_base.py` | 使用 Qwen3 Embedding 的 RAG 知识库文档片段 |
 | `episodic` | `memory/conversation_memory.py` | 压缩后的历史对话摘要 |
 | `user_profile` | `memory/conversation_memory.py` | 用户画像，包含偏好和关键实体 |
 
