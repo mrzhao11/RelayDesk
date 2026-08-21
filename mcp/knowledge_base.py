@@ -40,6 +40,7 @@ class KnowledgeBase:
         embedding_model: Optional[str] = None,
         collection_name: Optional[str] = None,
     ):
+        self._embedding_function = embedding_function
         # 优先连接独立 ChromaDB 服务（服务端内置 embedding 模型，客户端无需下载）
         self._use_server = False
         try:
@@ -116,12 +117,19 @@ class KnowledgeBase:
         """
         语义检索：根据 query 返回最相关的文档片段。
 
-        ChromaDB 内部自动将 query 转为向量，与存储的文档向量做余弦相似度匹配。
+        查询侧优先使用模型专用 instruction 生成向量，再与文档向量做余弦匹配。
         """
-        results = self._collection.query(
-            query_texts=[query],
-            n_results=top_k,
-        )
+        embed_query = getattr(self._embedding_function, "embed_query", None)
+        if callable(embed_query):
+            results = self._collection.query(
+                query_embeddings=[embed_query(query)],
+                n_results=top_k,
+            )
+        else:
+            results = self._collection.query(
+                query_texts=[query],
+                n_results=top_k,
+            )
 
         items = []
         if results["documents"] and results["documents"][0]:

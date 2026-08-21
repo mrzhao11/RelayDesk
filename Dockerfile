@@ -33,8 +33,8 @@ RUN mkdir -p /root/.cache/chroma/onnx_models/all-MiniLM-L6-v2 && \
     tar -xzf onnx.tar.gz && \
     rm onnx.tar.gz
 
-# 预下载正式 Intent/RAG 共用的中文 Embedding，避免容器首次启动联网等待。
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-small-zh-v1.5')"
+# 预下载正式 Intent/RAG 共用的 Qwen3 Embedding，避免容器首次启动联网等待。
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('Qwen/Qwen3-Embedding-0.6B')"
 
 # ── 阶段 3：生产镜像 ──────────────────────────────────────────────────────────
 FROM base AS production

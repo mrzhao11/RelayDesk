@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Compare the legacy Chroma default embedding with the configured Chinese model."""
+"""Compare the legacy and current local embedding models on RelayDesk data."""
 
 import asyncio
 import json
+import os
 import sys
 import tempfile
 import time
@@ -25,7 +26,12 @@ from evaluation.benchmark.run_design_rationale import (
 )
 
 
-MODEL_NAME = "BAAI/bge-small-zh-v1.5"
+MODEL_NAME = "Qwen/Qwen3-Embedding-0.6B"
+MODEL_SOURCE = os.getenv("EMBEDDING_MODEL_SOURCE", MODEL_NAME)
+QUERY_INSTRUCTION = (
+    "Given an enterprise service desk request, retrieve the most relevant "
+    "policy or troubleshooting passage that answers the request"
+)
 
 
 def rank_of(titles: Sequence[str], relevant: Sequence[str]) -> Any:
@@ -54,14 +60,16 @@ async def run_variant(kb: Any, samples: Sequence[Dict[str, Any]]) -> tuple[List[
 
 
 async def main() -> None:
-    from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
+    from core.embedding_provider import LocalSentenceTransformerEmbedding
     from core.intent_recognizer import IntentRecognizer
     from mcp.knowledge_base import KnowledgeBase
 
     samples = load_json(DATA_DIR / "rag_design_rationale.json")["samples"]
-    embedding_function = SentenceTransformerEmbeddingFunction(
-        model_name=MODEL_NAME,
+    embedding_function = LocalSentenceTransformerEmbedding(
+        model_name=MODEL_SOURCE,
         device="cpu",
+        query_prompt_name="query",
+        query_instruction=QUERY_INSTRUCTION,
         normalize_embeddings=True,
     )
 
@@ -69,31 +77,31 @@ async def main() -> None:
     legacy_variant = previous["results"]["variants"]["V0 Direct Retrieval"]
     legacy_rows = legacy_variant["per_sample_results"]
 
-    with tempfile.TemporaryDirectory(prefix="relaydesk-bge-embedding-") as bge_dir:
-        bge_kb = KnowledgeBase(
+    with tempfile.TemporaryDirectory(prefix="relaydesk-qwen3-embedding-") as candidate_dir:
+        candidate_kb = KnowledgeBase(
             chroma_host="127.0.0.1",
             chroma_port=65535,
-            chroma_path=bge_dir,
+            chroma_path=candidate_dir,
             embedding_function=embedding_function,
             embedding_model=MODEL_NAME,
-            collection_name="knowledge-base-bge-ablation",
+            collection_name="knowledge-base-qwen3-ablation",
         )
-        bge_rows, bge_latencies = await run_variant(bge_kb, samples)
+        candidate_rows, candidate_latencies = await run_variant(candidate_kb, samples)
 
     legacy_by_id = {row["id"]: row for row in legacy_rows}
-    bge_by_id = {row["id"]: row for row in bge_rows}
+    candidate_by_id = {row["id"]: row for row in candidate_rows}
     examples = []
     improved = 0
     regressed = 0
     unchanged = 0
     for sample in samples:
         legacy = legacy_by_id[sample["id"]]
-        bge = bge_by_id[sample["id"]]
+        candidate = candidate_by_id[sample["id"]]
         legacy_rank = rank_of(legacy["retrieved_titles"], sample["relevant_titles"])
-        bge_rank = rank_of(bge["retrieved_titles"], sample["relevant_titles"])
+        candidate_rank = rank_of(candidate["retrieved_titles"], sample["relevant_titles"])
         legacy_score = 1.0 / legacy_rank if legacy_rank else 0.0
-        bge_score = 1.0 / bge_rank if bge_rank else 0.0
-        outcome = "improved" if bge_score > legacy_score else "regressed" if bge_score < legacy_score else "unchanged"
+        candidate_score = 1.0 / candidate_rank if candidate_rank else 0.0
+        outcome = "improved" if candidate_score > legacy_score else "regressed" if candidate_score < legacy_score else "unchanged"
         if outcome == "improved":
             improved += 1
         elif outcome == "regressed":
@@ -105,11 +113,11 @@ async def main() -> None:
             "query": sample["query"],
             "relevant_titles": sample["relevant_titles"],
             "legacy_rank": legacy_rank,
-            "bge_rank": bge_rank,
+            "candidate_rank": candidate_rank,
             "outcome": outcome,
             "legacy_top5": legacy["retrieved_titles"],
-            "bge_top5": bge["retrieved_titles"],
-            "bge_top5_scores": [item["score"] for item in bge["retrieved_items"]],
+            "candidate_top5": candidate["retrieved_titles"],
+            "candidate_top5_scores": [item["score"] for item in candidate["retrieved_items"]],
         })
 
     intent_samples = [
@@ -140,14 +148,15 @@ async def main() -> None:
 
     payload = envelope(
         "EXECUTED",
-        "The legacy Chroma default embedding and BGE Chinese embedding were compared on the same fixed RAG dataset.",
-        "The legacy per-sample baseline is reused from the previously executed rag_ablation.json. BGE uses an isolated temporary ChromaDB collection, the same 20 demonstration documents, and direct Top-5 retrieval without query rewrite or reranking. Recall and rank metrics are comparable; latency was not measured in the same run.",
+        "The legacy Chroma default embedding and Qwen3 Embedding were compared on the same fixed RelayDesk dataset.",
+        "The legacy per-sample baseline is reused from rag_ablation.json. Qwen3 uses the official instruction format with an enterprise service desk task description, an isolated temporary ChromaDB collection, the same 20 demonstration documents, and direct Top-5 retrieval without query rewrite or reranking.",
         {
             "legacy_model": "Chroma default all-MiniLM-L6-v2",
             "candidate_model": MODEL_NAME,
+            "query_instruction": QUERY_INSTRUCTION,
             "metrics": {
                 "legacy": legacy_variant["metrics"],
-                "bge": retrieval_metrics(bge_rows, bge_latencies),
+                "candidate": retrieval_metrics(candidate_rows, candidate_latencies),
             },
             "outcome_counts": {
                 "improved": improved,
@@ -157,7 +166,7 @@ async def main() -> None:
             "examples": examples,
             "intent_embedding_only": {
                 "legacy_character_ngram": legacy_intent_metrics,
-                "bge": macro_classification_metrics(intent_rows),
+                "candidate": macro_classification_metrics(intent_rows),
                 "per_sample_results": intent_examples,
             },
         },

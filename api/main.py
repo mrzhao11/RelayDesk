@@ -78,14 +78,19 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 
 def _build_embedding_function():
-    """构造 Intent 与 RAG 共用的本地中文 Embedding。"""
-    from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
+    """构造 Intent 与 RAG 共用的本地多语言 Embedding。"""
+    from core.embedding_provider import LocalSentenceTransformerEmbedding
 
-    model = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5").strip()
+    model = os.getenv("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-0.6B").strip()
     device = os.getenv("EMBEDDING_DEVICE", "cpu").strip()
-    function = SentenceTransformerEmbeddingFunction(
+    function = LocalSentenceTransformerEmbedding(
         model_name=model,
         device=device,
+        query_prompt_name=os.getenv("EMBEDDING_QUERY_PROMPT", "query").strip(),
+        query_instruction=os.getenv(
+            "EMBEDDING_QUERY_INSTRUCTION",
+            "Given an enterprise service desk request, retrieve the most relevant policy or troubleshooting passage that answers the request",
+        ).strip(),
         normalize_embeddings=True,
     )
     return model, device, function
@@ -174,7 +179,7 @@ async def lifespan(app: FastAPI):
         chroma_path=os.getenv("CHROMA_PERSIST_DIRECTORY", "/app/data/chroma"),
         embedding_function=embedding_function,
         embedding_model=embedding_model,
-        collection_name=os.getenv("RAG_COLLECTION_NAME", "knowledge_base_bge_small_zh_v1_5"),
+        collection_name=os.getenv("RAG_COLLECTION_NAME", "knowledge_base_qwen3_embedding_0_6b"),
     )
     logger.info(f"知识库已加载: {await kb.doc_count_async()} 个文档片段")
 
@@ -415,7 +420,7 @@ async def _build_knowledge_context(message: str, intent=None, top_k: int = 3) ->
         if not result.success or not isinstance(result.data, list) or not result.data:
             return "", False
 
-        min_score = float(os.getenv("RAG_MIN_SCORE", "0.55"))
+        min_score = float(os.getenv("RAG_MIN_SCORE", "0.45"))
         parts = ["[知识库检索结果]"]
         used = False
         for i, item in enumerate(result.data[:top_k], start=1):
