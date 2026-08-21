@@ -14,7 +14,7 @@
 
 可复现的组件诊断仍显示 Pattern 单分支 Accuracy 为 `0.4889`、Macro-F1 为 `0.4968`。本轮权重消融已执行，但结果受 44.68% 的 LLM 结构化输出失败率影响，只能解释为当前运行配置的可靠性表现，不能用于宣称权重最优。
 
-本次已接入与 LLM Provider 解耦的 `BAAI/bge-small-zh-v1.5`。即使 `.env` 使用 DeepSeek 兼容端点，正式代码也会执行 **LLM 70% + Embedding 20% + Pattern 10%**。Embedding-only 组件诊断中，BGE Accuracy/Macro-F1 为 `0.4667/0.4412`，高于原字符 n-gram 的 `0.2889/0.2520`；但仍低于本轮可解析的 LLM-only 总体结果，不能把 Embedding 单分支当作主分类器，也尚未重跑新的 LLM 三路端到端 Accuracy。
+本次默认模型已切换为与 LLM Provider 解耦的 `Qwen/Qwen3-Embedding-0.6B`。即使 `.env` 使用 DeepSeek 兼容端点，正式代码也会执行 **LLM 70% + Embedding 20% + Pattern 10%**。Embedding-only 组件诊断中，Qwen3 Accuracy/Macro-F1 为 `0.4444/0.4040`，高于原字符 n-gram 的 `0.2889/0.2520`，但略低于此前 BGE 的 `0.4667/0.4412`；因此不能把 Embedding 单分支当作主分类器，也尚未重跑新的 LLM 三路端到端 Accuracy。
 
 ### Q2. 相比 Direct ChromaDB Retrieval，Query Rewrite 到底解决了哪些真实 Bad Cases？
 
@@ -22,7 +22,7 @@
 
 为区分“机制无效”和“输出预算不兼容”，又从 Direct 漏召回中固定选取 6 个困难案例，将**评测适配器**的结构化输出下限从 256 临时提高到 4096，正式代码和配置不变。6 次 Rewrite 均成功输出查询；Direct Top-5 为 `0/6`，Rewrite Top-5 为 `3/6`，Rewrite+Rerank Top-5 为 `4/6`。其中“`forbidden`”案例从 Direct Top-5 外进入最终第 1，“秒退”“两条一样的交易”“退的钱几天回原账户”分别进入第 2/5/4。
 
-随后新增的 BGE Direct 对照在相同 22 条有答案数据上达到 Recall@1/3/5 `0.8182/0.9091/1.0000`、MRR `0.9068`。此前 10 个 Direct Top-5 漏召回全部进入 BGE Top-5，其中 403、秒退、已开票改公司名、重复交易、退款时效等多数直接升到第 1。因此当前最高优先级结论已经改变：**先使用适合中文的 Embedding 解决基础召回，再决定是否值得承担 Rewrite/Rerank 的 LLM 延迟。** 旧 Rewrite 结果仍用于解释机制，但不代表 BGE 接入后的最新 Direct 基线。
+最终采用的 Qwen3 Direct 在相同 22 条有答案数据上达到 Recall@1/3/5 `0.7727/0.9773/0.9773`、MRR `0.9091`。查询侧使用企业服务台专用英文 instruction，文档侧不添加 instruction；相对旧 Direct，25 条样本中 20 条改善、0 条退步、5 条不变。因此当前最高优先级结论是：**先使用更合适的基础 Embedding 解决候选召回，再决定是否值得承担 Rewrite/Rerank 的 LLM 延迟。**
 
 ### Q3. Rerank 主要提升 Recall 还是 Ranking Quality？
 
@@ -30,7 +30,7 @@
 
 6 条兼容性诊断中，Rewrite+Rerank 相比 Rewrite 将 MRR 从 `0.1583` 提到 `0.3250`，主要由 403 文档从 Top-5 外提升到第 1 驱动；但该阶段只有 3/6 次得到模型结果，另外 3 次触发 30 秒超时。Rerank Only 的 6 次则全部超时，排序完全未变。它说明 Rerank 在候选已召回时能改善顺序，也说明当前推理模型的延迟不满足在线链路要求，不能直接把 4096 设为生产修复。
 
-BGE Direct 的 MRR 已达到 `0.9068`，所以 Rerank 的边际空间明显缩小。现阶段 Rerank 应从“必须执行的默认步骤”降为“在候选接近或复合请求时再评估的可选优化”；本轮没有修改既有 Rerank 控制流，但后续不应优先投入。
+Qwen3 Direct 的 MRR 已达到 `0.9091`，所以 Rerank 的边际空间明显缩小。现阶段 Rerank 应从“必须执行的默认步骤”降为“在候选接近或复合请求时再评估的可选优化”；本轮没有修改既有 Rerank 控制流，但后续不应优先投入。
 
 ### Q4. 相比 Single General Agent，Multi-Agent 到底解决了什么问题？
 
@@ -67,34 +67,34 @@ BGE Direct 的 MRR 已达到 `0.9068`，所以 Rerank 的边际空间明显缩�
 
 本轮支持的是**机制**，不是正式参数最优性：按需 Skills 能减少 prompt；Primary + Supporting 能覆盖复合领域；Cache/Timeout/Breaker/Fallback 状态机按预期工作。
 
-以下仍主要是经验配置：Intent 的 70/20/10、置信度阈值 0.5、路由 supporting 阈值 0.45 和 0.55 比例、Top-K、12 秒 RAG timeout、Tool 30 秒 timeout、熔断 5 次/60 秒、Memory 15 条压缩/保留 5 条/24h TTL。BGE 的 `RAG_MIN_SCORE=0.55` 仅由当前 22 条正例和 3 条负例给出一个保守起点，不是充分校准的最优值。
+以下仍主要是经验配置：Intent 的 70/20/10、置信度阈值 0.5、路由 supporting 阈值 0.45 和 0.55 比例、Top-K、12 秒 RAG timeout、Tool 30 秒 timeout、熔断 5 次/60 秒、Memory 15 条压缩/保留 5 条/24h TTL。Qwen3 的 `RAG_MIN_SCORE=0.45` 仅由当前 22 条正例和 3 条负例给出一个保守起点，不是充分校准的最优值。
 
 ### Q10. “为什么要这样设计？”当前测试能给出哪些真实、可复现的证据？
 
 可以说：
 
-1. 将旧默认 Embedding 替换为 BGE 后，Direct Recall@5 从 `0.5227` 提升到 `1.0000`，MRR 从 `0.2303` 提升到 `0.9068`；25 条样本中 19 条排名改善、1 条退步、5 条不变。
+1. 将旧默认 Embedding 替换为 Qwen3 后，Direct Recall@5 从 `0.5227` 提升到 `0.9773`，MRR 从 `0.2303` 提升到 `0.9091`；25 条样本中 20 条排名改善、0 条退步、5 条不变。
 2. Current 路由在手工标注的 12 条角色覆盖数据上达到 `1.0000`，而 General-only 为 `0.1667`、Primary-only 为 `0.7917`。
 3. Dynamic Skills 将平均 prompt 字符减少 `64.68%`，同时保持必要 Skill 覆盖。
 4. Tool 治理在缓存、超时、异常、连续故障和恢复注入下均表现出预期保护行为。
 
-不能说：新的三路 Intent 已优于 LLM Only、BGE 在真实大规模知识库仍能保持 Recall@5=1.0、Rerank 已带来线上净收益、多 Agent 已提高回答质量或分层 Memory 已提高事实保留。Judge 27 次调用中仅 10 次有效；聚合均分能区分高/中/低质量，但重复稳定性尚不足。
+不能说：新的三路 Intent 已优于 LLM Only、Qwen3 在真实大规模知识库仍能保持当前召回、Rerank 已带来线上净收益、多 Agent 已提高回答质量或分层 Memory 已提高事实保留。Judge 27 次调用中仅 10 次有效；聚合均分能区分高/中/低质量，但重复稳定性尚不足。
 
 ---
 
 ## 1. Executive Summary
 
-本次先完成 Current Design Rationale 只读验证，随后根据暴露出的中文检索硬伤实施最小 Embedding 改造：新增本地 BGE 依赖，让 Intent 与 RAG 共用同一模型实例，并使用独立 Chroma collection 防止新旧向量混用。API 字段、Agent、Intent 枚举、Tool 和 Memory 框架均未改变。
+本次先完成 Current Design Rationale 只读验证，随后根据 Hugging Face/MTEB 候选与项目内复测切换到本地 Qwen3 Embedding，让 Intent 与 RAG 共用同一模型实例，并使用独立 Chroma collection 防止新旧向量混用。API 字段、Agent、Intent 枚举、Tool 和 Memory 框架均未改变。
 
 结论分三层：
 
 | 证据等级 | 结论 |
 |---|---|
-| 较强、已执行 | BGE Direct 检索改善；路由的角色关注点覆盖；Dynamic Skills 的 prompt 缩减与污染减少；Tool 生命周期可靠性 |
+| 较强、已执行 | Qwen3 Direct 检索改善；路由的角色关注点覆盖；Dynamic Skills 的 prompt 缩减与污染减少；Tool 生命周期可靠性 |
 | 已执行但暴露兼容性问题 | Intent LLM 分支、四组 RAG、Judge 调用均已真实发起；结构化输出截断导致大量 fallback |
 | 仍是工程假设 | 分层 Memory 效果；多 Agent 回答质量；回答级 Skills 合规性；Judge 重复稳定性 |
 
-最重要的硬结论是：**原 RAG 低召回的第一瓶颈是默认 Embedding 的中文语义适配，而不是缺少更复杂的 Rewrite/Rerank。BGE 在小型固定集上以毫秒级 Direct 检索解决了旧基线的大部分问题；LLM 结构化输出和 Rerank 超时仍存在，但优先级已下降。**
+最重要的硬结论是：**原 RAG 低召回的第一瓶颈是默认 Embedding 的中文语义适配，而不是缺少更复杂的 Rewrite/Rerank。Qwen3 在小型固定集上解决了旧基线的大部分问题；LLM 结构化输出和 Rerank 超时仍存在，但优先级已下降。**
 
 ## 2. Test Environment
 
@@ -108,14 +108,14 @@ BGE Direct 的 MRR 已达到 `0.9068`，所以 Rerank 的边际空间明显缩�
 | 模型预检 | 成功；`955.395ms`，输入 88 / 输出 8 Token |
 | Redis | TCP 可连接 |
 | ChromaDB | TCP 可连接 |
-| 当前 Intent 模式 | LLM 70% + BGE Embedding 20% + Pattern 10% |
-| Embedding | `BAAI/bge-small-zh-v1.5`，512 维，本地 CPU，归一化 |
-| RAG collection | `knowledge_base_bge_small_zh_v1_5`（与旧向量隔离） |
-| RAG_MIN_SCORE | 新安装默认 `0.55`；仅小样本初始校准 |
+| 当前 Intent 模式 | LLM 70% + Qwen3 Embedding 20% + Pattern 10% |
+| Embedding | `Qwen/Qwen3-Embedding-0.6B`，1024 维，本地 CPU，归一化 |
+| RAG collection | `knowledge_base_qwen3_embedding_0_6b`（与旧向量隔离） |
+| RAG_MIN_SCORE | 新安装默认 `0.45`；仅小样本初始校准 |
 | RAG_TIMEOUT_SECONDS | 默认 `12` |
 | LLM_TIMEOUT_SECONDS | 默认 `45` |
 | LLM_MAX_RETRIES | 默认 `2` |
-| Docker 镜像 | CPU-only PyTorch wheel 解析验证通过；完整构建因官方源下载过慢中止，未完成最终镜像产出 |
+| Docker 镜像 | Compose 配置通过；Python 3.12 全量依赖解析通过；Qwen3 完整镜像尚未构建（权重约 1.2 GB） |
 
 安全说明：报告和结果只记录“密钥是否配置”，没有写出密钥内容。
 
@@ -283,33 +283,35 @@ Rerank Only 共发起 25 次 LLM 调用，全部在 256 Token 上限结束且没
 
 LLM 运行细节也必须同时披露：Rewrite 6/6 正常结束且没有空文本；Rewrite 后的 Rerank 只有 3/6 完成，另外 3 次超时；Rerank Only 6/6 超时。由此得到的工程优先级是：先解决结构化输出模型/预算兼容性，再选择低延迟 Reranker 或缩小候选与输出格式；不能简单把生产 `max_tokens` 提到 4096。
 
-### 7.6 中文 Embedding 对照：旧默认模型与 BGE
+### 7.6 Embedding 对照：旧默认模型、BGE 与最终 Qwen3
 
-本轮对 `BAAI/bge-small-zh-v1.5` 做了真实下载、512 维推理、临时 Chroma 导入和 25 条 Direct Top-5 检索。旧基线逐样本结果复用已执行的 `rag_ablation.json`；BGE 使用同一批 20 篇演示知识重新编码。召回和排名可直接比较，延迟不是同轮严格对照。
+最终对 `Qwen/Qwen3-Embedding-0.6B` 做了真实下载、1024 维 CPU 推理、临时 Chroma 导入和 25 条 Direct Top-5 检索。旧基线逐样本结果复用 `rag_ablation.json`；Qwen3 使用同一批 20 篇演示知识重新编码，并按照官方推荐在查询侧加入企业服务台英文 instruction。BGE 是上一轮候选的历史对照，已从运行时配置中移除；三个模型的延迟不是同轮严格对照。
 
 | 模型 | Recall@1 | Recall@3 | Recall@5 | MRR | P95 ms |
 |---|---:|---:|---:|---:|---:|
 | Chroma 默认 `all-MiniLM-L6-v2` | 0.0909 | 0.3636 | 0.5227 | 0.2303 | 155.128 |
 | `BAAI/bge-small-zh-v1.5` | 0.8182 | 0.9091 | 1.0000 | 0.9068 | 14.645 |
+| `Qwen/Qwen3-Embedding-0.6B` | 0.7727 | 0.9773 | 0.9773 | 0.9091 | 100.618 |
 
-25 条逐样本比较为：`19` 条改善、`1` 条退步、`5` 条不变。代表案例：
+Qwen3 相对旧默认模型的 25 条逐样本比较为：`20` 条改善、`0` 条退步、`5` 条不变。代表案例：
 
-| 查询 | 旧模型排名 | BGE 排名 |
+| 查询 | 旧模型排名 | Qwen3 排名 |
 |---|---:|---:|
 | 能登录但是某个资源 forbidden | Top-5 外 | 第 1 |
 | 电脑端程序启动后秒退 | Top-5 外 | 第 1 |
-| 票已经开了还能换公司名称吗 | Top-5 外 | 第 1 |
+| 票已经开了还能换公司名称吗 | Top-5 外 | 第 2 |
 | 一笔服务出现两条一样的交易 | Top-5 外 | 第 1 |
 | 退的钱一般几天回原账户 | Top-5 外 | 第 1 |
-| 服务台能处理哪些企业问题 | Top-5 外 | 第 4 |
-| 服务多次没解决而且影响扩大 | 第 3 | 第 5（唯一退步） |
+| 服务台能处理哪些企业问题 | Top-5 外 | 第 1 |
+| 服务多次没解决而且影响扩大 | 第 3 | 第 2 |
 
 边界必须同时说明：
 
-- 这是 20 篇演示知识、22 条正例的小数据集，文档和评测语料同域，`Recall@5=1.0` 不能外推到真实大库。
-- 3 条无答案查询仍都会返回候选。BGE 无答案 Top-1 分数为 `0.3677/0.4266/0.5066`，正例中最低相关 Top-1 为 `0.5596`，因此把新安装默认阈值暂设为 `0.55`；只有 3 条负例，仍需扩展阈值曲线。
-- Intent Embedding-only Accuracy/Macro-F1 从字符 n-gram 的 `0.2889/0.2520` 提升到 BGE 的 `0.4667/0.4412`，说明分支更有用但不能单独取代 LLM。否定表达、上下文依赖和相邻细粒度意图仍有明显 Bad Case。
-- 模型首次下载约 96 MB；Docker 构建阶段预下载，运行时共用一个模型实例。更换模型必须同步更换 collection 并重建向量。
+- 这是 20 篇演示知识、22 条正例的小数据集，文档和评测语料同域，`Recall@5=0.9773` 不能外推到真实大库。
+- 3 条无答案查询仍都会返回候选，Qwen3 无答案 Top-1 分数为 `0.2965/0.4401/0.4076`；当前正例最低相关分为 `0.4763`，因此把默认阈值暂设为 `0.45`。负例太少，仍需扩展阈值曲线。
+- Intent Embedding-only Accuracy/Macro-F1 从字符 n-gram 的 `0.2889/0.2520` 提升到 Qwen3 的 `0.4444/0.4040`，说明分支更有用但不能单独取代 LLM。否定表达、上下文依赖和相邻细粒度意图仍有明显 Bad Case。
+- Qwen3 权重约 1.2 GB；Docker 构建阶段预下载，运行时共用一个模型实例。更换模型必须同步更换 collection 并重建向量。
+- 选型不是“Qwen3 在所有本地指标都优于 BGE”：它的 Recall@3 和 MRR 略高，但 Recall@1、Recall@5 与 Intent-only 略低。最终选择依据是 MTEB 候选、Apache-2.0 许可、100+ 语言、32K 上下文、instruction-aware 能力与项目内指标共同满足要求。
 
 ## 8. Multi-Agent Ablation
 
@@ -508,10 +510,10 @@ Judge 的正确定位是自动化回归信号，不是绝对 ground truth。恢�
 ### RAG
 
 1. 旧 Direct：简单、低调用数，但 `all-MiniLM-L6-v2` Recall@5 仅 0.5227。
-2. 中文 BGE Direct：Recall@5 1.0000、MRR 0.9068，证明先选对基础向量模型比增加 LLM 链路更重要。
+2. Qwen3 Direct：Recall@5 0.9773、MRR 0.9091，证明先选对基础向量模型比增加 LLM 链路更重要。
 3. + Rewrite：旧基线正式参数下 24/25 次回退；扩容虽有案例收益，但 P95 约 15.56 秒。
-4. + Rerank：旧基线兼容诊断出现 1 条排序改善，但大量请求在 30 秒超时后回退；BGE 后优先级下降。
-5. + score/fallback filter：防止“有返回即命中”；BGE 的新初始阈值为 0.55，仍需更多负例校准。
+4. + Rerank：旧基线兼容诊断出现 1 条排序改善，但大量请求在 30 秒超时后回退；Qwen3 后优先级下降。
+5. + score/fallback filter：防止“有返回即命中”；Qwen3 的新初始阈值为 0.45，仍需更多负例校准。
 
 ### Agent
 
@@ -542,8 +544,8 @@ Judge 的正确定位是自动化回归信号，不是绝对 ground truth。恢�
 ## 16. Current Design Trade-offs
 
 1. **复杂度与运行收益不对称**：Intent Fusion、Rewrite/Rerank 和 Judge 已发起真实 LLM 测试，但推理模型的最终 JSON 经常被 Token 上限截断，复杂机制大量退化。
-2. **本地模型增加镜像和冷启动成本**：BGE 模型约 96 MB，并引入 PyTorch/Transformers；Docker 已预下载，但镜像会显著变大。
-3. **小数据集可能高估 BGE**：演示知识与问题同域，Recall@5 1.0 不是大规模生产效果承诺。
+2. **本地模型增加镜像和冷启动成本**：Qwen3 模型约 1.2 GB，并引入 PyTorch/Transformers；Docker 已预下载，但镜像会明显变大。
+3. **小数据集可能高估 Qwen3**：演示知识与问题同域，Recall@5 0.9773 不是大规模生产效果承诺。
 4. **规则对关键词敏感**：Intent Pattern、路由复合检测和 Skills 选择都依赖词表，否定、金额和错误码可能产生误判。
 5. **Synthesis 额外增加一次 LLM 调用**：可能提升整合，也可能丢失专业细节或增加延迟。
 6. **Memory 错误会放大**：错误摘要和画像可能跨轮次持续影响答案。
@@ -594,7 +596,7 @@ Cache、Timeout、Fallback、Breaker 和 Recovery 均通过 Fake Tool 故障注�
 | confidence 0.5 | 未校准 | 没有 threshold curve |
 | Query Rewrite | 正式参数无增益；兼容诊断有增益 | 24/25 回退；扩容后 6 条困难样本有 3 条进入 Top-5，但延迟不可接受 |
 | Rerank | 正式参数无增益；兼容诊断有单例增益 | 正式参数 25/25 截断；扩容后有 1 条升至第 1，但 30 秒超时频繁 |
-| RAG score 0.55 / Top-K | 初始小样本支持 | 仅 3 条无答案负例，没有充分 precision-recall/拒答曲线 |
+| RAG score 0.45 / Top-K | 初始小样本支持 | 仅 3 条无答案负例，没有充分 precision-recall/拒答曲线 |
 | supporting score 0.45 / ratio 0.55 | 仅小样本吻合 | 路由数据集与规则同源 |
 | Multi-Agent Synthesis | 未证明 | 回答/Judge 未执行 |
 | Memory 15/5/24h | 未证明 | 没有长对话保留率 |
@@ -731,7 +733,7 @@ Original Query → ChromaDB Top-K。
 
 #### Design Choice
 
-先把默认英文向量模型替换为 BGE 中文 Embedding；保留 Query Rewrite、多查询召回、去重、Rerank 作为兼容能力。
+先把默认英文向量模型替换为 Qwen3 Embedding，并使用企业服务台查询 instruction；保留 Query Rewrite、多查询召回、去重、Rerank 作为兼容能力。
 
 #### Why
 
@@ -743,11 +745,11 @@ Original Query → ChromaDB Top-K。
 
 **兼容性诊断**：在 6 条 Direct 全部漏召回的困难样本上，仅提高 benchmark 输出预算后，Rewrite 命中 3 条，Rewrite+Rerank 命中 4 条；403 案例升到第 1。但 Rewrite P95 约 15.56 秒，完整链路 P95 约 57.21 秒，不能作为生产参数建议。
 
-**Embedding 改造结果**：BGE Direct 在 22 条有答案样本上 Recall@5 为 1.0000、MRR 为 0.9068；旧模型的 10 条 Top-5 漏召回全部进入 Top-5。它以更低复杂度覆盖了原本希望 Rewrite/Rerank 解决的大部分问题。
+**Embedding 改造结果**：Qwen3 Direct 在 22 条有答案样本上 Recall@5 为 0.9773、MRR 为 0.9091；相对旧默认模型，25 条中 20 条排名改善、0 条退步、5 条不变。它以更低链路复杂度覆盖了原本希望 Rewrite/Rerank 解决的大部分问题。
 
 #### Trade-off
 
-本地 BGE 增加依赖、镜像体积和首次加载成本；新相似度分布需要重校阈值。继续启用 Rewrite/Rerank 还会增加 LLM 调用、延迟、token 成本和 query drift 风险。
+本地 Qwen3 增加依赖、约 1.2 GB 镜像体积和首次加载成本；新相似度分布需要重校阈值。继续启用 Rewrite/Rerank 还会增加 LLM 调用、延迟、token 成本和 query drift 风险。
 
 ## 20. Metrics Suitable for Interview Discussion
 
@@ -756,8 +758,8 @@ Original Query → ChromaDB Top-K。
 - 路由关注点角色覆盖率：0.1667 / 0.7917 / 1.0000。
 - Dynamic Skills 平均 prompt 字符减少率：64.68%。
 - Direct RAG：Recall@1 0.0909、Recall@3 0.3636、Recall@5 0.5227、MRR 0.2303、P95 155.128ms。
-- BGE Direct RAG：Recall@1 0.8182、Recall@3 0.9091、Recall@5 1.0000、MRR 0.9068；25 条中 19 改善、1 退步、5 不变。
-- Intent Embedding-only：字符 n-gram Accuracy/Macro-F1 0.2889/0.2520，BGE 为 0.4667/0.4412。
+- Qwen3 Direct RAG：Recall@1 0.7727、Recall@3 0.9773、Recall@5 0.9773、MRR 0.9091；25 条中 20 改善、0 退步、5 不变。
+- Intent Embedding-only：字符 n-gram Accuracy/Macro-F1 0.2889/0.2520，Qwen3 为 0.4444/0.4040。
 - Rewrite/Current/Rerank-only：指标与 Direct 相同；P95 分别约 6.73s、6.85s、6.08s。
 - 兼容性诊断（6 条定向困难样本、非总体指标）：Direct Top-5 0/6，Rewrite 3/6，Rewrite+Rerank 4/6；Rerank 阶段频繁触发 30 秒超时。
 - Judge 有效聚合 Overall：高 0.9725、中 0.6625、低 0.1375；成功调用 10/27。
@@ -855,7 +857,7 @@ done
 | intent_weight_ablation.json | EXECUTED / 已执行（受 LLM 解析失败影响） |
 | rag_ablation.json | PARTIALLY EXECUTED / 部分执行 |
 | rag_compatibility_examples.json | EXECUTED / 已执行（6 条定向兼容性诊断） |
-| embedding_ablation.json | EXECUTED / 已执行（BGE RAG + Intent Embedding-only） |
+| embedding_ablation.json | EXECUTED / 已执行（Qwen3 RAG + Intent Embedding-only） |
 | routing_ablation.json | EXECUTED / 已执行 |
 | multi_agent_ablation.json | NOT EXECUTED / 未执行 |
 | memory_ablation.json | PARTIALLY EXECUTED / 部分执行 |

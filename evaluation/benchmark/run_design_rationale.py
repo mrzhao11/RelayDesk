@@ -88,7 +88,7 @@ def socket_state(host: str, port: int) -> str:
 def environment_snapshot() -> Dict[str, Any]:
     values = dotenv_values(ROOT / ".env") if (ROOT / ".env").exists() else {}
     base_url = values.get("ANTHROPIC_BASE_URL") or ""
-    embedding_model = values.get("EMBEDDING_MODEL") or "BAAI/bge-small-zh-v1.5"
+    embedding_model = values.get("EMBEDDING_MODEL") or "Qwen/Qwen3-Embedding-0.6B"
     provider = urlparse(base_url).netloc if base_url else "Anthropic default endpoint"
     chroma_port = int(values.get("CHROMA_PORT") or 8000)
     redis_port = int(values.get("REDIS_PORT") or 6379)
@@ -102,7 +102,7 @@ def environment_snapshot() -> Dict[str, Any]:
         "embedding_model": embedding_model,
         "current_intent_fusion_mode": "LLM 70% + Embedding 20% + Pattern 10%",
         "key_config": {
-            "RAG_MIN_SCORE": values.get("RAG_MIN_SCORE") or "default 0.55",
+            "RAG_MIN_SCORE": values.get("RAG_MIN_SCORE") or "default 0.45",
             "RAG_TIMEOUT_SECONDS": values.get("RAG_TIMEOUT_SECONDS") or "default 12",
             "LLM_TIMEOUT_SECONDS": values.get("LLM_TIMEOUT_SECONDS") or "default 45",
             "LLM_MAX_RETRIES": values.get("LLM_MAX_RETRIES") or "default 2",

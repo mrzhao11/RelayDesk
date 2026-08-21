@@ -10,6 +10,7 @@ class FakeEmbeddingFunction:
 
     def __init__(self):
         self.calls = 0
+        self.query_calls = 0
 
     def __call__(self, input):
         self.calls += 1
@@ -23,6 +24,10 @@ class FakeEmbeddingFunction:
                 1.0,
             ])
         return vectors
+
+    def embed_query(self, query):
+        self.query_calls += 1
+        return self([query])[0]
 
 
 def test_third_party_llm_keeps_injected_embedding_enabled():
@@ -69,4 +74,5 @@ def test_knowledge_base_uses_injected_embedding_for_documents_and_queries(tmp_pa
     assert kb.doc_count > 0
     assert calls_after_import > 0
     assert embedding.calls > calls_after_import
+    assert embedding.query_calls == 1
     assert len(results) == 3
