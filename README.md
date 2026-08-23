@@ -2,15 +2,15 @@
 
 本文档说明 RelayDesk 的部署、启动、API 调用、知识库使用、ChromaDB 数据查看、监控评测和常见排障。
 
-RelayDesk 是一个面向企业统一服务场景的多 Agent 请求协同系统，通过细粒度意图识别、按需 RAG、结构化主辅 Agent 路由、动态 Skills 和分层记忆，为用户提供综合咨询、技术支持、账户服务、费用结算和人工升级。
+RelayDesk 是一个面向企业级 SaaS 客户服务场景的多 Agent 请求协同平台，通过细粒度意图识别、按需 RAG、结构化主辅 Agent 路由、动态 Skills 和分层记忆，为外部企业客户提供产品咨询、租户账户与权限支持、技术排障、套餐订阅与费用结算和人工升级。
 
 现有 Agent 对外角色如下，内部枚举和值保持兼容：
 
-| 现有 Agent | 企业统一服务台角色 | 处理内容 |
-|------------|--------------------|----------|
-| `GeneralAgent` | 综合服务协调Agent | 通用咨询、流程说明、信息澄清、服务分流 |
-| `TechnicalAgent` | 技术支持Agent | 登录失败、错误码、软件异常、系统故障 |
-| `BillingAgent` | 费用与结算Agent | 账单、发票、退款、支付异常、订阅费用 |
+| 现有 Agent | 企业级 SaaS 客户服务角色 | 处理内容 |
+|------------|---------------------------|----------|
+| `GeneralAgent` | 综合服务协调Agent | 产品咨询、使用流程、信息澄清、服务分流 |
+| `TechnicalAgent` | 技术支持Agent | 租户账号、SSO、Workspace 权限、API/SDK/Webhook、客户端故障 |
+| `BillingAgent` | 费用与结算Agent | 套餐订阅、账单、发票、退款、支付异常 |
 | `ESCALATION` | 人工升级通道 | 投诉、紧急问题、低置信度或高风险请求 |
 
 核心链路为：
@@ -37,7 +37,7 @@ RelayDesk/
 ├── mcp/knowledge_base.py          # ChromaDB RAG 知识库
 ├── monitor/performance_monitor.py # Agent/工具在线监控
 ├── evaluation/evaluator.py        # 端到端评测
-├── skills/                        # 三类动态企业服务规范
+├── skills/                        # 三类动态 SaaS 客户服务规范
 ├── RelayDeskFrontend/             # Vue 前端，与后端同仓库
 ├── tests/test_hardening.py        # 路由、RAG、协作和管理鉴权回归测试
 ├── scripts/smoke_acceptance.py    # 八个最小验收场景 HTTP 冒烟脚本
@@ -82,9 +82,9 @@ LLM_MAX_RETRIES=1
 EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
 EMBEDDING_DEVICE=cpu
 EMBEDDING_QUERY_PROMPT=query
-EMBEDDING_QUERY_INSTRUCTION=Given an enterprise service desk request, retrieve the most relevant policy or troubleshooting passage that answers the request
+EMBEDDING_QUERY_INSTRUCTION=Given an enterprise SaaS customer support request, retrieve the most relevant product documentation, account policy, billing rule, or troubleshooting passage that answers the request
 RAG_COLLECTION_NAME=knowledge_base_qwen3_embedding_0_6b
-RAG_MIN_SCORE=0.45
+RAG_MIN_SCORE=0.48
 RAG_TIMEOUT_SECONDS=20
 CORS_ORIGINS=http://localhost,http://localhost:5173,http://127.0.0.1:5173
 ```
@@ -99,10 +99,10 @@ ANTHROPIC_API_KEY=your_deepseek_key
 
 Embedding 与 LLM Provider 解耦：即使 LLM 使用 DeepSeek 兼容端点，Intent 仍会执行
 `LLM 70% + Embedding 20% + Pattern 10%` 三路融合，RAG 也使用同一个中文模型。
-首次运行会下载约 1.2 GB 模型。RAG 查询使用企业服务台专用英文 instruction，
+首次运行会下载约 1.2 GB 模型。RAG 查询使用企业级 SaaS 客户支持专用英文 instruction，
 文档和 Intent 模板不添加检索 instruction。更换 `EMBEDDING_MODEL` 时必须同时更换
 `RAG_COLLECTION_NAME`，让知识库在新 collection 中重新导入，不能混用不同维度的向量。
-`RAG_MIN_SCORE=0.45` 是基于当前 22 条有答案、3 条无答案样本得到的保守起点，
+`RAG_MIN_SCORE=0.48` 是基于当前 22 条有答案、3 条无答案 SaaS 样本得到的保守起点，
 不是通用最优值；知识规模或模型变化后必须重新校准。
 
 Docker Compose 场景下，Redis 和 ChromaDB 的连接由 `docker-compose.yml` 覆盖为容器内地址。通常不需要手动改：
@@ -416,8 +416,8 @@ curl -X POST "http://localhost:8000/search?query=退款多久到账&top_k=3"
 {
   "documents": [
     {
-      "title": "企业账号密码重置（演示）",
-      "content": "适用场景：忘记企业账号密码。处理步骤：通过企业身份验证入口完成重置。人工升级条件：无法使用登记的验证方式。"
+      "title": "租户账号密码与 SSO 登录恢复",
+      "content": "适用场景：成员无法登录 SaaS 租户。处理步骤：确认本地账号或 SSO 登录方式，通过平台验证入口或企业 IdP 恢复。人工升级条件：域名、成员映射或租户配置异常。"
     }
   ]
 }
@@ -499,7 +499,7 @@ curl -X POST http://localhost:8000/eval/run \
 curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
   -d '{
-    "message": "企业统一服务台可以处理哪些问题？",
+    "message": "RelayDesk 可以为企业 SaaS 客户处理哪些问题？",
     "user_id": "user_001",
     "conv_id": "session_001"
   }'
@@ -510,7 +510,7 @@ curl -X POST http://localhost:8000/chat \
 ```json
 {
   "conv_id": "session_001",
-  "response": "我可以协助通用咨询、账户问题、技术故障、费用结算和人工升级。涉及真实后台结果时需要对应系统或人工核验。",
+  "response": "我可以协助产品咨询、租户账号与权限、技术故障、套餐费用和人工升级。涉及真实账户或后台结果时需要通过 Tool 或人工核验。",
   "intent": "query",
   "agent_type": "general",
   "escalated": false,
@@ -538,7 +538,7 @@ curl -X POST http://localhost:8000/chat \
 curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
   -d '{
-    "message": "我需要申请企业账号权限",
+    "message": "我需要调整 Workspace 成员权限",
     "user_id": "user_001",
     "conv_id": "session_001"
   }'
@@ -596,7 +596,7 @@ RelayDesk 的知识库由 `mcp/knowledge_base.py` 管理，底层使用 ChromaDB
 knowledge_base
 ```
 
-首次启动时，如果知识库为空或仍是片段不足的旧版演示库，会补充 20 篇企业统一服务台演示知识。内容覆盖综合服务、账号与技术、费用与结算；每篇都明确适用场景、处理步骤、人工升级条件和“非真实企业制度”边界。长文档继续按约 500 字切片。
+首次启动时，如果知识库为空，会导入约 20 篇虚构 SaaS 产品的通用客户支持知识。内容覆盖产品与 Workspace 使用、租户账号与技术、套餐订阅与费用结算；每篇都明确适用场景、处理步骤、人工升级条件，以及“真实账户状态必须通过 Tool 或人工核验”的边界。长文档继续按约 500 字切片。
 
 ### 7.1 查看知识库统计
 
@@ -621,12 +621,12 @@ curl -X POST http://localhost:8000/knowledge/add \
   -d '{
     "documents": [
       {
-        "title": "VPN 连接说明（演示）",
-        "content": "适用场景：企业 VPN 无法连接。处理步骤：检查网络、客户端状态和设备时间。人工升级条件：证书告警或多人同时断连。"
+        "title": "Webhook 与 SDK 连接说明",
+        "content": "适用场景：Webhook 回调超时或 SDK 连接异常。处理步骤：检查环境、回调地址、证书、版本和脱敏日志。人工升级条件：密钥泄露、持续验签失败或多个租户受影响。"
       },
       {
-        "title": "费用核验流程（演示）",
-        "content": "适用场景：用户对费用记录存在争议。处理步骤：准备脱敏交易信息并提交人工财务核验。"
+        "title": "SaaS 费用争议核验流程",
+        "content": "适用场景：客户对套餐、席位或续费记录存在争议。处理步骤：准备租户、账单周期和脱敏交易信息并提交人工财务核验。"
       }
     ]
   }'
@@ -854,7 +854,7 @@ PY
 ```bash
 curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
-  -d '{"message": "我经常咨询企业账号和费用问题，回答请简洁一点", "user_id": "profile_user", "conv_id": "profile_session"}'
+  -d '{"message": "我经常咨询租户账号和订阅费用问题，回答请简洁一点", "user_id": "profile_user", "conv_id": "profile_session"}'
 ```
 
 等待几秒后查看：

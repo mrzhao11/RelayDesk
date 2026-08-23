@@ -4,8 +4,8 @@
       <section class="brand">
         <div class="brand-mark">RD</div>
         <div>
-          <h1>RelayDesk 企业统一服务台</h1>
-          <p>多 Agent 企业服务请求协同</p>
+          <h1>RelayDesk 企业级 SaaS 统一客户服务平台</h1>
+          <p>多 Agent SaaS 客户请求协同</p>
         </div>
       </section>
 
@@ -78,8 +78,8 @@
     <section class="workspace">
       <header class="workspace-header">
         <div>
-          <span class="eyebrow">RelayDesk Service Desk</span>
-          <h2>企业服务对话</h2>
+          <span class="eyebrow">RelayDesk SaaS Customer Support</span>
+          <h2>企业客户服务对话</h2>
           <p>{{ currentBackend.baseUrl }}</p>
         </div>
         <div class="header-actions">
@@ -98,8 +98,8 @@
             <p>{{ item.content }}</p>
           </article>
           <div v-if="messages.length === 0" class="empty-state">
-            <h3>欢迎使用 RelayDesk 企业统一服务台</h3>
-            <p>你可以咨询通用服务、账户问题、技术故障、费用结算或申请人工协助。</p>
+            <h3>欢迎使用 RelayDesk 企业级 SaaS 统一客户服务平台</h3>
+            <p>你可以咨询产品使用、租户账号、Workspace 权限、技术故障、套餐订阅或申请人工支持。</p>
             <div class="quick-prompts">
               <button v-for="item in exampleQuestions" :key="item" type="button" @click="draft = item">{{ item }}</button>
             </div>
@@ -107,7 +107,7 @@
         </div>
 
         <form class="composer" @submit.prevent="sendMessage">
-          <textarea v-model="draft" rows="3" placeholder="输入问题，例如：忘记企业账号密码怎么办？"></textarea>
+          <textarea v-model="draft" rows="3" placeholder="输入问题，例如：成员无法通过 SSO 登录怎么办？"></textarea>
           <button :disabled="busy || !draft.trim()">{{ busy ? '发送中' : '发送' }}</button>
         </form>
       </section>
@@ -133,16 +133,16 @@
 
         <article class="tool-panel">
           <div class="panel-heading">
-            <h2>导入演示知识</h2>
-            <span class="pill soft">Demo Docs</span>
+            <h2>导入产品知识</h2>
+            <span class="pill soft">Product Docs</span>
           </div>
           <label>
             <span>标题</span>
-            <input v-model="docTitle" placeholder="企业服务补充说明（演示）" />
+            <input v-model="docTitle" placeholder="Workspace 成员权限说明" />
           </label>
           <label>
             <span>内容</span>
-            <textarea v-model="docContent" rows="5" placeholder="输入适用场景、处理步骤和人工升级条件；请勿冒充真实企业制度"></textarea>
+            <textarea v-model="docContent" rows="5" placeholder="输入适用场景、处理步骤和人工升级条件；真实账户状态需通过 Tool 或人工核验"></textarea>
           </label>
           <div class="actions">
             <button @click="submitKnowledge" :disabled="busy || !docTitle.trim() || !docContent.trim()">添加文档</button>
@@ -182,16 +182,16 @@ const statusText = ref('')
 const knowledgeCount = ref('-')
 const searchQuery = ref('退款多久能到账')
 const searchResults = ref([])
-const docTitle = ref('企业服务补充说明（演示）')
-const docContent = ref('适用场景：员工咨询通用服务流程。处理步骤：说明需求并提供必要的脱敏信息。人工升级条件：涉及真实审批、后台权限或高风险操作。此内容仅为演示制度。')
+const docTitle = ref('Workspace 成员权限说明')
+const docContent = ref('适用场景：企业客户需要调整 Workspace 成员角色。处理步骤：确认租户、成员账号、目标角色和资源范围。人工升级条件：涉及 Organization 管理员、敏感数据或后台变更。真实账户状态需通过 Tool 或人工核验。')
 const messageList = ref(null)
 const exampleQuestions = [
-  '忘记企业账号密码怎么办？',
-  '登录一直报401。',
-  '系统页面出现500错误。',
-  '如何修改发票抬头？',
-  '为什么被重复扣款？',
-  '这个问题比较紧急，请帮我转人工。'
+  '成员无法通过 SSO 登录，一直报401。',
+  '调用 API 返回403，如何检查 Workspace 权限？',
+  'Webhook 回调一直超时。',
+  '如何修改订阅发票抬头？',
+  '为什么套餐被重复扣款？',
+  '问题影响整个租户，请帮我转人工。'
 ]
 
 const currentBackend = computed(() => backendMeta(settings.backend, settings))

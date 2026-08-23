@@ -479,19 +479,19 @@ class EndToEndEvaluator:
 # ── 内置测试用例（开箱即用）──────────────────────────────────────────────────
 
 DEFAULT_INTENT_CASES: List[IntentTestCase] = [
-    IntentTestCase("企业统一服务台可以处理哪些问题？", "query"),
-    IntentTestCase("请帮我申请软件使用权限",         "request"),
+    IntentTestCase("RelayDesk 可以处理哪些 SaaS 客户问题？", "query"),
+    IntentTestCase("请帮我申请 Workspace 成员权限", "request"),
     IntentTestCase("你们的处理体验太差了",           "complaint"),
-    IntentTestCase("忘记企业账号密码怎么办？",       "account_security"),
+    IntentTestCase("忘记租户账号密码怎么办？",       "account_security"),
     IntentTestCase("请修改我的账户联系邮箱",         "account"),
     IntentTestCase("登录一直报401",                  "technical_login"),
     IntentTestCase("页面持续出现500错误",            "technical_crash"),
-    IntentTestCase("企业软件总是崩溃",                "technical"),
+    IntentTestCase("SaaS 客户端总是崩溃",             "technical"),
     IntentTestCase("如何申请发票？",                  "invoice"),
     IntentTestCase("为什么被重复扣款？",              "payment_issue"),
     IntentTestCase("退款多久到账？",                  "refund"),
     IntentTestCase("订阅费用是怎么计算的？",          "billing"),
-    IntentTestCase("发现企业账号异常登录",            "account_security"),
+    IntentTestCase("发现租户账号异常登录",            "account_security"),
     IntentTestCase("我要投诉这个处理结果",            "complaint"),
     IntentTestCase("这个问题很紧急，请帮我转人工",    "human_handoff"),
     IntentTestCase("你好",                            "greeting"),
@@ -500,17 +500,17 @@ DEFAULT_INTENT_CASES: List[IntentTestCase] = [
 ]
 
 DEFAULT_DIALOG_CASES: List[Dict[str, Any]] = [
-    {"question": "企业统一服务台可以协助处理哪些类型的请求？"},
-    {"question": "忘记企业账号密码怎么办？"},
-    {"question": "登录企业系统一直报错 401"},
+    {"question": "RelayDesk 可以协助处理哪些 SaaS 客户请求？"},
+    {"question": "忘记租户账号密码怎么办？"},
+    {"question": "通过 SSO 登录 Workspace 一直报错 401"},
     {"question": "页面出现 500 错误应该怎么处理？"},
     {"question": "如何修改发票抬头？"},
     {"question": "为什么同一笔订阅费用被重复扣款？"},
     {"question": "登录报 401，而且还被重复扣款。"},
     {"question": "我要投诉，请帮我转人工。"},
     {"turns": [
-        "你好，我需要申请一项企业服务",
-        "是企业账号权限申请",
-        "我访问系统时提示 403，需要准备哪些信息转人工核验？",
+        "你好，我需要调整 SaaS 租户配置",
+        "是 Workspace 成员权限申请",
+        "访问资源时提示 403，需要准备哪些信息转人工核验？",
     ]},
 ]

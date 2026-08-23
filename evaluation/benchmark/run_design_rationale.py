@@ -102,7 +102,7 @@ def environment_snapshot() -> Dict[str, Any]:
         "embedding_model": embedding_model,
         "current_intent_fusion_mode": "LLM 70% + Embedding 20% + Pattern 10%",
         "key_config": {
-            "RAG_MIN_SCORE": values.get("RAG_MIN_SCORE") or "default 0.45",
+            "RAG_MIN_SCORE": values.get("RAG_MIN_SCORE") or "default 0.48",
             "RAG_TIMEOUT_SECONDS": values.get("RAG_TIMEOUT_SECONDS") or "default 12",
             "LLM_TIMEOUT_SECONDS": values.get("LLM_TIMEOUT_SECONDS") or "default 45",
             "LLM_MAX_RETRIES": values.get("LLM_MAX_RETRIES") or "default 2",

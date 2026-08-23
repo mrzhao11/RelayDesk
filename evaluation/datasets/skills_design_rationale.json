@@ -3,13 +3,13 @@
   "version": "1.0",
   "description": "Compares always-on rules with agent- and keyword-based dynamic loading for prompt length and irrelevant-rule contamination.",
   "samples": [
-    {"id":"SKILL-001","message":"企业统一服务台能做什么？","agent":"general","required_skills":["general_customer_service"]},
+    {"id":"SKILL-001","message":"RelayDesk 能处理哪些 SaaS 客户问题？","agent":"general","required_skills":["general_customer_service"]},
     {"id":"SKILL-002","message":"我要投诉并转人工。","agent":"general","required_skills":["general_customer_service"]},
-    {"id":"SKILL-003","message":"企业账号登录报 401。","agent":"technical","required_skills":["technical_support"]},
+    {"id":"SKILL-003","message":"租户账号通过 SSO 登录报 401。","agent":"technical","required_skills":["technical_support"]},
     {"id":"SKILL-004","message":"页面出现 500，怎么安全排查？","agent":"technical","required_skills":["technical_support"]},
-    {"id":"SKILL-005","message":"VPN 证书告警怎么办？","agent":"technical","required_skills":["technical_support"]},
+    {"id":"SKILL-005","message":"Webhook 验签失败并提示证书异常怎么办？","agent":"technical","required_skills":["technical_support"]},
     {"id":"SKILL-006","message":"如何修改发票抬头？","agent":"billing","required_skills":["billing_support"]},
-    {"id":"SKILL-007","message":"同一笔服务被扣款两次。","agent":"billing","required_skills":["billing_support"]},
+    {"id":"SKILL-007","message":"同一笔订阅被扣款两次。","agent":"billing","required_skills":["billing_support"]},
     {"id":"SKILL-008","message":"退款多久能到账？","agent":"billing","required_skills":["billing_support"]},
     {"id":"SKILL-009","message":"订阅费用有争议，需要人工财务核验。","agent":"billing","required_skills":["billing_support"]}
   ]
