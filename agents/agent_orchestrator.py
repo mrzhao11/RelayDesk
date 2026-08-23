@@ -18,7 +18,6 @@
 import asyncio
 import json
 import logging
-import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -40,40 +39,6 @@ class AgentType(Enum):
     TECHNICAL = "technical"  # 技术支持
     BILLING   = "billing"    # 账单/退款
     ESCALATION = "escalation" # 人工升级（占位）
-
-
-# Supporting Agent 只由这些集中维护的强证据触发。这里有意不包含
-# “套餐”“帮助”“问题”等宽泛词，以高 Precision 为优先目标。
-DOMAIN_STRONG_SIGNALS: Dict[AgentType, tuple[tuple[str, str], ...]] = {
-    AgentType.TECHNICAL: (
-        ("401", r"(?<!\d)401(?!\d)"),
-        ("403", r"(?<!\d)403(?!\d)"),
-        ("500", r"(?<!\d)500(?!\d)"),
-        ("error", r"\berror\b"),
-        ("crash", r"\bcrash(?:ed|es|ing)?\b"),
-        ("崩溃", r"崩溃"),
-        ("登录失败", r"登录失败"),
-        ("无法登录", r"无法登录"),
-        ("验证码异常", r"验证码.{0,6}(?:异常|失败|收不到|无法获取)"),
-    ),
-    AgentType.BILLING: (
-        ("退款", r"退款"),
-        ("重复扣款", r"重复扣款"),
-        ("多扣", r"多扣"),
-        ("重复交易", r"(?:扣了|收了|出现)(?:两次|两遍)|两笔(?:相同|一样)(?:扣款|交易)"),
-        ("陌生扣款", r"陌生扣款"),
-        ("支付失败", r"支付失败"),
-        ("发票", r"发票"),
-        ("账单异常", r"账单.{0,6}(?:异常|有误|不对)"),
-        ("refund", r"\brefund\b"),
-        ("invoice", r"\binvoice\b"),
-    ),
-}
-
-DOMAIN_ENTITY_SIGNALS: Dict[AgentType, tuple[str, ...]] = {
-    AgentType.TECHNICAL: ("error_code",),
-    AgentType.BILLING: ("amount",),
-}
 
 
 @dataclass
@@ -118,6 +83,7 @@ class Request:
     history:     Optional[List[Dict[str, str]]] = None  # 对话历史，传给意图识别
     entities:    Dict[str, List[str]] = field(default_factory=dict)
     intent:      Optional[IntentCategory] = None
+    secondary_intents: List[IntentCategory] = field(default_factory=list)
     intent_group: Optional[str] = None
     urgency:     Optional[UrgencyLevel]   = None
     intent_confidence: float = 1.0
@@ -144,7 +110,7 @@ class RoutingDecision:
     """一次请求的结构化路由决策。
 
     confidence 表示 Primary 路由沿用的 Intent 置信度，不是独立计算的
-    路由概率；Supporting 由可解释的强证据触发，不产生伪精确分数。
+    路由概率；Supporting 直接映射同一次 LLM 识别出的 Secondary Intents。
     """
     primary_agent: AgentType
     supporting_agents: List[AgentType] = field(default_factory=list)
@@ -414,6 +380,8 @@ class AgentOrchestrator:
         if req.intent is None:
             intent_result = await self.recognize_intent(req.message, history=req.history)
             req.intent  = intent_result.intent
+            req.secondary_intents = intent_result.secondary_intents
+            req.entities = intent_result.entities
             req.intent_group = intent_result.intent_group
             req.urgency = intent_result.urgency
             req.intent_confidence = intent_result.confidence
@@ -552,7 +520,7 @@ class AgentOrchestrator:
         结构化路由决策。
 
         Primary 只由最终 Intent 映射，Routing 层不重复进行领域打分。
-        Supporting 只检查 Primary 之外的 Technical/Billing 强证据。
+        Supporting 直接映射同一次意图识别得到的 Secondary Intents。
         """
         if req.urgency == UrgencyLevel.CRITICAL:
             return RoutingDecision(
@@ -569,17 +537,18 @@ class AgentOrchestrator:
             )
 
         primary_agent = self._route(req.intent, req.urgency)
-        supporting_evidence = self._supporting_strong_evidence(req, primary_agent)
-        supporting_agents = list(supporting_evidence)
+        supporting_sources = self._supporting_from_secondary_intents(req, primary_agent)
+        supporting_agents = list(supporting_sources)
         intent_name = req.intent.value if req.intent else "unknown"
         reason_parts = [f"primary={primary_agent.value} from intent={intent_name}"]
-        if supporting_evidence:
-            for agent_type, evidence in supporting_evidence.items():
+        if supporting_sources:
+            for agent_type, secondary_intents in supporting_sources.items():
                 reason_parts.append(
-                    f"supporting={agent_type.value} because {', '.join(evidence)}"
+                    f"supporting={agent_type.value} from secondary_intent="
+                    f"{','.join(intent.value for intent in secondary_intents)}"
                 )
         else:
-            reason_parts.append("supporting=none; no strong cross-domain evidence")
+            reason_parts.append("supporting=none; no routable secondary intents")
 
         return RoutingDecision(
             primary_agent=primary_agent,
@@ -588,40 +557,24 @@ class AgentOrchestrator:
             confidence=req.intent_confidence,
         )
 
-    def _supporting_strong_evidence(
+    def _supporting_from_secondary_intents(
         self,
         req: Request,
         primary_agent: AgentType,
-    ) -> Dict[AgentType, List[str]]:
-        """返回非 Primary 领域的 Supporting Agent 及其强证据。
-
-        当前只允许 Technical 与 Billing 互为 Supporting。General 不作为
-        Supporting，也不因为宽泛业务词触发协作。每个领域最多返回一次。
-        """
-        if primary_agent == AgentType.TECHNICAL:
-            candidate_domains = (AgentType.BILLING,)
-        elif primary_agent == AgentType.BILLING:
-            candidate_domains = (AgentType.TECHNICAL,)
-        else:
-            return {}
-
-        message = (req.message or "").lower()
-        entities = req.entities or {}
-        candidates: Dict[AgentType, List[str]] = {}
-        for domain in candidate_domains:
-            evidence: List[str] = []
-            for label, pattern in DOMAIN_STRONG_SIGNALS[domain]:
-                if re.search(pattern, message, flags=re.IGNORECASE):
-                    evidence.append(f"keyword={label}")
-            for entity_name in DOMAIN_ENTITY_SIGNALS[domain]:
-                if entities.get(entity_name):
-                    evidence.append(f"entity={entity_name}")
-
-            # 单个强关键词、单个强 Entity，或多个强证据均可触发。
-            evidence = list(dict.fromkeys(evidence))
-            if evidence and self._pool.get(domain):
-                candidates[domain] = evidence
-
+    ) -> Dict[AgentType, List[IntentCategory]]:
+        """把 LLM Secondary Intents 映射为唯一且可执行的 Supporting Agent。"""
+        candidates: Dict[AgentType, List[IntentCategory]] = {}
+        for secondary in (req.secondary_intents or [])[:2]:
+            if not isinstance(secondary, IntentCategory) or secondary == req.intent:
+                continue
+            target = self._INTENT_ROUTING.get(secondary, AgentType.GENERAL)
+            if target in (primary_agent, AgentType.GENERAL, AgentType.ESCALATION):
+                continue
+            if target not in (AgentType.TECHNICAL, AgentType.BILLING):
+                continue
+            if not self._pool.get(target):
+                continue
+            candidates.setdefault(target, []).append(secondary)
         return candidates
 
     @staticmethod

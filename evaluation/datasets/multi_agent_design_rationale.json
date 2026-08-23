@@ -1,19 +1,22 @@
 {
-  "dataset_name": "RelayDesk Routing and Multi-Agent Design Rationale Benchmark",
-  "version": "1.0",
-  "description": "Gold role sets measure concern coverage and must not be interpreted as end-to-end response quality.",
+  "dataset_name": "RelayDesk Routing and Multi-Intent Design Rationale Benchmark",
+  "version": "2.0",
+  "description": "Gold primary/secondary intents and role sets evaluate deterministic mapping separately from semantic recognition quality.",
   "samples": [
-    {"id":"ROUTE-001","message":"RelayDesk 能处理哪些 SaaS 客户问题？","intent":"query","required_roles":["general"],"scenario":"single-domain"},
-    {"id":"ROUTE-002","message":"我想修改租户账户绑定邮箱。","intent":"account","required_roles":["general"],"scenario":"single-domain"},
-    {"id":"ROUTE-003","message":"登录报 401。","intent":"technical_login","required_roles":["technical"],"scenario":"single-domain"},
-    {"id":"ROUTE-004","message":"页面一直返回 500。","intent":"technical","required_roles":["technical"],"scenario":"single-domain"},
-    {"id":"ROUTE-005","message":"如何修改发票抬头？","intent":"invoice","required_roles":["billing"],"scenario":"single-domain"},
-    {"id":"ROUTE-006","message":"为什么出现重复扣款？","intent":"payment_issue","required_roles":["billing"],"scenario":"single-domain"},
-    {"id":"ROUTE-007","message":"登录报 401，而且还被重复扣款。","intent":"technical_login","required_roles":["technical","billing"],"scenario":"technical-plus-billing"},
-    {"id":"ROUTE-008","message":"页面 500，同时这次支付也被扣了两遍。","intent":"technical","required_roles":["technical","billing"],"scenario":"technical-plus-billing"},
-    {"id":"ROUTE-009","message":"订阅扣费后客户端就开始崩溃。","intent":"billing","required_roles":["billing","technical"],"scenario":"billing-plus-technical"},
-    {"id":"ROUTE-010","message":"我要投诉，请帮我转人工。","intent":"human_handoff","required_roles":["escalation"],"scenario":"human-escalation"},
-    {"id":"ROUTE-011","message":"账号疑似被盗，而且有一笔陌生扣款。","intent":"account_security","required_roles":["technical","billing"],"scenario":"security-plus-billing"},
-    {"id":"ROUTE-012","message":"先告诉我开票流程，再说明页面 500 怎么收集信息。","intent":"invoice","required_roles":["billing","technical"],"scenario":"billing-plus-technical"}
+    {"id":"ROUTE-001","message":"RelayDesk 能处理哪些 SaaS 客户问题？","gold_primary_intent":"query","gold_secondary_intents":[],"required_roles":["general"],"scenario":"single-domain"},
+    {"id":"ROUTE-002","message":"我想修改租户账户绑定邮箱。","gold_primary_intent":"account","gold_secondary_intents":[],"required_roles":["general"],"scenario":"single-domain"},
+    {"id":"ROUTE-003","message":"登录报 401。","gold_primary_intent":"technical_login","gold_secondary_intents":[],"required_roles":["technical"],"scenario":"single-domain"},
+    {"id":"ROUTE-004","message":"页面一直返回 500。","gold_primary_intent":"technical_crash","gold_secondary_intents":[],"required_roles":["technical"],"scenario":"single-domain"},
+    {"id":"ROUTE-005","message":"如何修改发票抬头？","gold_primary_intent":"invoice","gold_secondary_intents":[],"required_roles":["billing"],"scenario":"single-domain"},
+    {"id":"ROUTE-006","message":"为什么出现重复扣款？","gold_primary_intent":"payment_issue","gold_secondary_intents":[],"required_roles":["billing"],"scenario":"single-domain"},
+    {"id":"ROUTE-007","message":"登录报 401，而且还被重复扣款。","gold_primary_intent":"technical_login","gold_secondary_intents":["payment_issue"],"required_roles":["technical","billing"],"scenario":"explicit-technical-plus-billing"},
+    {"id":"ROUTE-008","message":"页面 500，同时这次支付也被扣了两遍。","gold_primary_intent":"technical_crash","gold_secondary_intents":["payment_issue"],"required_roles":["technical","billing"],"scenario":"explicit-technical-plus-billing"},
+    {"id":"ROUTE-009","message":"订阅扣费后客户端就开始崩溃。","gold_primary_intent":"billing","gold_secondary_intents":["technical_crash"],"required_roles":["billing","technical"],"scenario":"billing-plus-technical"},
+    {"id":"ROUTE-010","message":"我要投诉，请帮我转人工。","gold_primary_intent":"human_handoff","gold_secondary_intents":[],"required_roles":["escalation"],"scenario":"human-escalation"},
+    {"id":"ROUTE-011","message":"账号疑似被盗，而且有一笔陌生扣款。","gold_primary_intent":"account_security","gold_secondary_intents":["payment_issue"],"required_roles":["technical","billing"],"scenario":"security-plus-billing"},
+    {"id":"ROUTE-012","message":"先告诉我开票流程，再说明页面 500 怎么收集信息。","gold_primary_intent":"invoice","gold_secondary_intents":["technical_crash"],"required_roles":["billing","technical"],"scenario":"billing-plus-technical"},
+    {"id":"ROUTE-013","message":"续费已经成功，但账号还是登录不了。","gold_primary_intent":"billing","gold_secondary_intents":["technical_login"],"required_roles":["billing","technical"],"scenario":"implicit-billing-plus-technical"},
+    {"id":"ROUTE-014","message":"我已经付费了，但高级功能还是没开通。","gold_primary_intent":"payment_issue","gold_secondary_intents":["technical"],"required_roles":["billing","technical"],"scenario":"implicit-billing-plus-technical"},
+    {"id":"ROUTE-015","message":"账单显示正常，但 SSO 一直认证失败。","gold_primary_intent":"technical_login","gold_secondary_intents":[],"required_roles":["technical"],"scenario":"negative-secondary-control"}
   ]
 }
