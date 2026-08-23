@@ -52,7 +52,7 @@ Qwen3 Direct 的 MRR 已达到 `0.8879`，所以 Rerank 的边际空间明显缩
 
 在本数据集的 5 条双领域样本中，Supporting Agent 补上了 Primary-only 缺失的第二专业角色，包括 401 + 重复扣款、500 + 重复支付、订阅 + 崩溃、账户安全 + 陌生扣款、发票 + 500。整体关注点角色覆盖率从 Primary-only 的 `0.7917` 提升到 Current 的 `1.0000`。
 
-对单领域问题，Primary-only 已覆盖必要角色；此时 Supporting Agent 没有结构收益，不应无条件启用。当前实现通过 `_collaboration_targets` 和分数阈值只在显式复合领域出现时增加辅助角色，这个方向是合理的。
+对单领域问题，Primary-only 已覆盖必要角色；此时 Supporting Agent 没有结构收益，不应无条件启用。当前实现由最终 Intent 直接映射 Primary，只在 Technical 与 Billing 之间用集中维护的强关键词或强 Entity 检查第二领域，不再使用 Domain Score、Supporting 分数阈值或 Primary 比例阈值。
 
 ### Q6. 相比直接拼历史聊天，分层 Memory 为什么值得存在？
 
@@ -77,7 +77,7 @@ Qwen3 Direct 的 MRR 已达到 `0.8879`，所以 Rerank 的边际空间明显缩
 
 本轮支持的是**机制**，不是正式参数最优性：按需 Skills 能减少 prompt；Primary + Supporting 能覆盖复合领域；Cache/Timeout/Breaker/Fallback 状态机按预期工作。
 
-以下仍主要是经验配置：Intent 的 70/20/10、置信度阈值 0.5、路由 supporting 阈值 0.45 和 0.55 比例、Top-K、20 秒 RAG timeout、Tool 30 秒 timeout、熔断 5 次/60 秒、Memory 15 条压缩/保留 5 条/24h TTL。Qwen3 的 `RAG_MIN_SCORE=0.48` 仅由当前 22 条正例和 3 条负例给出一个保守起点，不是充分校准的最优值。
+以下仍主要是经验配置：Intent 的 70/20/10、置信度阈值 0.5、Supporting 强证据词表、Top-K、20 秒 RAG timeout、Tool 30 秒 timeout、熔断 5 次/60 秒、Memory 15 条压缩/保留 5 条/24h TTL。路由不再使用 Supporting 分数阈值；Qwen3 的 `RAG_MIN_SCORE=0.48` 仅由当前 22 条正例和 3 条负例给出一个保守起点，不是充分校准的最优值。
 
 ### Q10. “为什么要这样设计？”当前测试能给出哪些真实、可复现的证据？
 
@@ -607,8 +607,8 @@ Cache、Timeout、Fallback、Breaker 和 Recovery 均通过 Fake Tool 故障注�
 | confidence 0.5 | 未校准 | 没有 threshold curve |
 | Query Rewrite | 正式参数无增益；兼容诊断有增益 | 24/25 回退；扩容后 6 条困难样本有 3 条进入 Top-5，但延迟不可接受 |
 | Rerank | 正式参数无增益；兼容诊断有单例增益 | 正式参数 25/25 截断；扩容后有 1 条升至第 1，但 30 秒超时频繁 |
-| RAG score 0.45 / Top-K | 初始小样本支持 | 仅 3 条无答案负例，没有充分 precision-recall/拒答曲线 |
-| supporting score 0.45 / ratio 0.55 | 仅小样本吻合 | 路由数据集与规则同源 |
+| RAG score 0.48 / Top-K | 初始小样本支持 | 仅 3 条无答案负例，没有充分 precision-recall/拒答曲线 |
+| Supporting 强证据词表 | 12 条确定性路由样本完全匹配 | 数据集与规则同源，隐式复合表达可能漏召回 |
 | Multi-Agent Synthesis | 未证明 | 回答/Judge 未执行 |
 | Memory 15/5/24h | 未证明 | 没有长对话保留率 |
 | Tool 30s / 5 failures / 60s | 机制通过、参数未优化 | 故障注入使用缩短时间 |
@@ -638,7 +638,7 @@ Single General；或只执行当前 Primary。
 
 #### Design Choice
 
-结构化主辅路由，仅在复合领域触发 Supporting。
+Primary 直接由最终 Intent 映射；仅在 Technical 与 Billing 之间，以高精度强证据触发 Supporting。
 
 #### Why
 
@@ -654,7 +654,7 @@ Single General；或只执行当前 Primary。
 
 #### 面试可能追问
 
-“gold 怎么标？”“为什么阈值是 0.45？”“Supporting 冲突怎么办？”回答时应承认阈值未校准，当前只有小样本角色覆盖证据。
+“gold 怎么标？”“为什么这些词算强证据？”“Supporting 冲突怎么办？”回答时应说明规则以高 Precision 为目标，当前只有小样本角色覆盖证据，隐式复合表达可能被漏掉。
 
 ### Story B：为什么动态加载 Skills
 

@@ -13,7 +13,7 @@ from agents.agent_orchestrator import (
     Request,
     RoutingDecision,
 )
-from core.intent_recognizer import IntentCategory
+from core.intent_recognizer import IntentCategory, UrgencyLevel
 
 
 class RoutingTests(unittest.TestCase):
@@ -48,16 +48,163 @@ class RoutingTests(unittest.TestCase):
         decision = self._orchestrator()._route_decision(request)
         self.assertEqual(decision.primary_agent, AgentType.TECHNICAL)
 
-    def test_composite_request_keeps_technical_and_billing(self):
+    def test_primary_mapping_covers_all_non_escalation_intents(self):
+        technical_intents = {
+            IntentCategory.TECHNICAL,
+            IntentCategory.TECHNICAL_LOGIN,
+            IntentCategory.TECHNICAL_CRASH,
+            IntentCategory.ACCOUNT_SECURITY,
+        }
+        billing_intents = {
+            IntentCategory.BILLING,
+            IntentCategory.REFUND,
+            IntentCategory.INVOICE,
+            IntentCategory.PAYMENT_ISSUE,
+        }
+        escalation_intents = {
+            IntentCategory.ESCALATION,
+            IntentCategory.HUMAN_HANDOFF,
+        }
+        orchestrator = self._orchestrator()
+        for intent in IntentCategory:
+            if intent in escalation_intents:
+                continue
+            expected = (
+                AgentType.TECHNICAL if intent in technical_intents
+                else AgentType.BILLING if intent in billing_intents
+                else AgentType.GENERAL
+            )
+            with self.subTest(intent=intent.value):
+                decision = orchestrator._route_decision(Request(
+                    message="普通请求",
+                    user_id="u1",
+                    conv_id="c1",
+                    intent=intent,
+                ))
+                self.assertEqual(decision.primary_agent, expected)
+                self.assertEqual(decision.supporting_agents, [])
+
+    def test_login_401_routes_to_technical_without_supporting(self):
         request = Request(
-            message="登录报401，而且还被重复扣款",
+            message="登录一直报401",
+            user_id="u1",
+            conv_id="c1",
+            intent=IntentCategory.TECHNICAL_LOGIN,
+            intent_confidence=0.87,
+        )
+        decision = self._orchestrator()._route_decision(request)
+        self.assertEqual(decision.primary_agent, AgentType.TECHNICAL)
+        self.assertEqual(decision.supporting_agents, [])
+        self.assertEqual(decision.confidence, 0.87)
+        self.assertIn("primary=technical from intent=technical_login", decision.reason)
+
+    def test_refund_routes_to_billing_without_supporting(self):
+        request = Request(
+            message="我要退款",
+            user_id="u1",
+            conv_id="c1",
+            intent=IntentCategory.REFUND,
+        )
+        decision = self._orchestrator()._route_decision(request)
+        self.assertEqual(decision.primary_agent, AgentType.BILLING)
+        self.assertEqual(decision.supporting_agents, [])
+
+    def test_technical_primary_adds_billing_for_duplicate_charge(self):
+        request = Request(
+            message="登录报401，而且这个月被重复扣款",
+            user_id="u1",
+            conv_id="c1",
+            intent=IntentCategory.TECHNICAL_LOGIN,
+        )
+        decision = self._orchestrator()._route_decision(request)
+        self.assertEqual(decision.primary_agent, AgentType.TECHNICAL)
+        self.assertEqual(decision.supporting_agents, [AgentType.BILLING])
+        self.assertIn("supporting=billing because keyword=重复扣款", decision.reason)
+
+    def test_billing_primary_adds_technical_for_500(self):
+        request = Request(
+            message="这个月重复扣款，而且登录也报500",
             user_id="u1",
             conv_id="c1",
             intent=IntentCategory.PAYMENT_ISSUE,
         )
         decision = self._orchestrator()._route_decision(request)
         self.assertEqual(decision.primary_agent, AgentType.BILLING)
-        self.assertIn(AgentType.TECHNICAL, decision.supporting_agents)
+        self.assertEqual(decision.supporting_agents, [AgentType.TECHNICAL])
+        self.assertIn("supporting=technical because keyword=500", decision.reason)
+
+    def test_broad_plan_word_does_not_trigger_billing_supporting(self):
+        request = Request(
+            message="我想了解一下套餐怎么用",
+            user_id="u1",
+            conv_id="c1",
+            intent=IntentCategory.QUERY,
+        )
+        decision = self._orchestrator()._route_decision(request)
+        self.assertEqual(decision.primary_agent, AgentType.GENERAL)
+        self.assertEqual(decision.supporting_agents, [])
+
+    def test_error_code_entity_triggers_technical_supporting(self):
+        request = Request(
+            message="付款之后接口不能使用",
+            user_id="u1",
+            conv_id="c1",
+            intent=IntentCategory.PAYMENT_ISSUE,
+            entities={"error_code": ["E_AUTH"]},
+        )
+        decision = self._orchestrator()._route_decision(request)
+        self.assertEqual(decision.primary_agent, AgentType.BILLING)
+        self.assertEqual(decision.supporting_agents, [AgentType.TECHNICAL])
+        self.assertIn("entity=error_code", decision.reason)
+
+    def test_amount_entity_triggers_billing_supporting(self):
+        request = Request(
+            message="登录后页面状态异常",
+            user_id="u1",
+            conv_id="c1",
+            intent=IntentCategory.TECHNICAL_LOGIN,
+            entities={"amount": ["￥99"]},
+        )
+        decision = self._orchestrator()._route_decision(request)
+        self.assertEqual(decision.primary_agent, AgentType.TECHNICAL)
+        self.assertEqual(decision.supporting_agents, [AgentType.BILLING])
+        self.assertIn("entity=amount", decision.reason)
+
+    def test_supporting_agent_is_deduplicated_across_evidence(self):
+        request = Request(
+            message="登录失败并返回500 error，客户端随后崩溃",
+            user_id="u1",
+            conv_id="c1",
+            intent=IntentCategory.BILLING,
+            entities={"error_code": ["500"]},
+        )
+        decision = self._orchestrator()._route_decision(request)
+        self.assertEqual(decision.supporting_agents, [AgentType.TECHNICAL])
+        self.assertIn("keyword=500", decision.reason)
+        self.assertIn("entity=error_code", decision.reason)
+
+    def test_escalation_and_critical_routing_are_unchanged(self):
+        escalation = Request(
+            message="请帮我转人工",
+            user_id="u1",
+            conv_id="c1",
+            intent=IntentCategory.HUMAN_HANDOFF,
+            urgency=UrgencyLevel.MEDIUM,
+            intent_confidence=0.9,
+        )
+        critical = Request(
+            message="问题非常紧急",
+            user_id="u1",
+            conv_id="c1",
+            intent=IntentCategory.TECHNICAL,
+            urgency=UrgencyLevel.CRITICAL,
+        )
+        escalation_decision = self._orchestrator()._route_decision(escalation)
+        critical_decision = self._orchestrator()._route_decision(critical)
+        self.assertEqual(escalation_decision.primary_agent, AgentType.ESCALATION)
+        self.assertEqual(critical_decision.primary_agent, AgentType.ESCALATION)
+        self.assertEqual(escalation_decision.supporting_agents, [])
+        self.assertEqual(critical_decision.supporting_agents, [])
 
 
 class KnowledgeContextTests(unittest.IsolatedAsyncioTestCase):
