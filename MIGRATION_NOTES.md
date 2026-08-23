@@ -1,8 +1,10 @@
-# RelayDesk 最小场景迁移与硬伤修复说明
+# RelayDesk SaaS 场景迁移与硬伤修复说明
 
 ## 1. 迁移目标
 
-本次改造把项目从偏电商售后客服的演示定位，最小范围调整为“企业统一服务台”。产品名最终由 EchoMind 更名为 RelayDesk。
+项目先从偏电商售后客服的演示定位迁移到通用企业服务场景，本轮再以最小范围将最终口径收敛为“面向外部企业客户的企业级 SaaS 统一客户服务平台”。产品名由 EchoMind 更名为 RelayDesk。
+
+这里的客户是购买或使用 SaaS 产品的企业租户，不是企业内部员工；RelayDesk 负责产品咨询、租户与 Workspace 账户、技术排障、订阅结算和人工升级。
 
 保持不变的部分：
 
@@ -10,7 +12,7 @@
 - 不新增 Agent，不新增或删除 `IntentCategory`。
 - 不修改 `/chat` 等现有 API 的请求和响应字段。
 - 不新增业务 Tool，继续只使用 `knowledge_search`。
-- 不接入真实 OA、IAM、财务或工单系统。
+- 不接入真实 CRM、订阅计费、IAM、财务或工单系统。
 - 保留 `order_status`、`logistics` 等历史兼容意图。
 
 ## 2. 最小场景迁移是怎么改的
@@ -19,21 +21,21 @@
 
 - 将页面、README、API 标题、Docker 服务和运行脚本统一更名为 RelayDesk。
 - 保留内部 Agent 值 `general`、`technical`、`billing`、`escalation`。
-- 只调整 General、Technical、Billing 的 system prompt，使其分别承担综合服务、技术支持、费用与结算职责。
+- 只调整 General、Technical、Billing 的 system prompt，使其分别承担 SaaS 综合客户服务、技术支持、费用与订阅结算职责。
 
 ### Skills
 
 - 保留原目录和动态加载机制。
-- `general_customer_service` 改为企业综合服务接待规范。
-- `technical_support` 增加企业账号、401/403/500、权限与安全升级边界。
-- `billing_support` 改为企业费用与结算规范。
+- `general_customer_service` 改为 SaaS 客户服务接待规范。
+- `technical_support` 覆盖租户账号、Workspace/Organization、SSO、401/403/500、API Token、Webhook、SDK 与安全升级边界。
+- `billing_support` 覆盖套餐、席位、自动续费、发票、退款和重复扣款。
 - `/skills/reload` 仍可使用，但现在需要管理密钥。
 
 ### 知识库与 RAG
 
 - KnowledgeBase 结构、`title + content` 导入格式和 500 字切片机制保持不变。
-- 默认知识扩充到 20 篇企业服务演示文档，覆盖综合服务、账户技术、费用结算。
-- 演示内容明确声明不代表真实企业制度，并包含适用场景、处理步骤、人工升级条件。
+- 默认知识为 20 篇虚构 SaaS 产品知识，覆盖产品服务、租户账户与技术、订阅费用结算。
+- 内容使用平台通用知识库规则，并包含适用场景、处理步骤、真实账户核验边界和人工升级条件。
 - 寒暄和人工升级不触发 RAG。
 - `fallback=true` 不注入 Prompt，也不计为 `knowledge_used`。
 - 本轮进一步增加 `RAG_MIN_SCORE`，低相关度结果同样不计为有效知识命中。
@@ -41,7 +43,7 @@
 ### Evaluation 与前端
 
 - 保留 Accuracy、Macro-F1、LLM-as-Judge 和回归检测实现，只替换默认样本。
-- 默认评测包含 18 条意图样本和 9 个对话场景。
+- 默认评测包含 18 条意图样本和 9 个对话场景；设计理由数据集继续覆盖全部既有意图以及 RAG、Skills、主辅 Agent 路由。
 - 前端更新欢迎语、示例问题、Agent 展示名称和知识上传说明。
 - 前端与后端合并为一个仓库，目录为 `RelayDeskFrontend`。
 

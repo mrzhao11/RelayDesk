@@ -3,8 +3,18 @@
 > 报告语言：中文  
 > 基准性质：**Reconstructed Baseline（重建基线）**  
 > 基准提交：`b27f122f918a42485afb300dacb6d547de47bd40`  
-> 执行日期：2026-08-20 至 2026-08-21（Asia/Shanghai）
+> 执行日期：2026-08-20 至 2026-08-21；SaaS 场景复测：2026-08-23（Asia/Shanghai）
 > 重要边界：本文验证“当前设计相对构造基线是否合理”，不把构造基线描述为真实历史版本，不虚构线上指标、用户反馈或历史演进。
+
+## SaaS 场景复测摘要（2026-08-23）
+
+当前业务口径已从内部员工服务入口收敛为：**面向外部企业客户的企业级 SaaS 统一客户服务平台**。Agent、Intent 枚举、API、Tool、Memory 和路由架构均未改变；Skills、20 篇默认知识、前端文案、默认 Evaluation 与 25 条 RAG 数据已换成租户、Workspace/Organization、SSO、API Token、Webhook/SDK、套餐/席位/订阅语境。
+
+真实加载 `Qwen/Qwen3-Embedding-0.6B` 后重新编码当前 20 篇 SaaS 知识并运行 25 条检索：22 条有答案样本的 Recall@1/3/5 为 `0.7727/0.9545/1.0000`，MRR 为 `0.8879`，P50/P95 为 `180.841/242.649ms`。相对重建的旧默认模型结果，22 条有答案查询全部改善，3 条无答案查询排名状态不变，没有正例退步。
+
+本轮仍暴露两个真实 Bad Case：`RAG-013` 的“扣款但套餐未开通”只排第 3，`RAG-019` 的“多次未解决且影响整个租户”只排第 5；它们虽然进入 Top-5，但 Top-1 仍会选到相邻文档。3 条无答案查询的最高分为 `0.4209/0.4787/0.4523`，当前正例目标文档最低分为 `0.4927`，因此默认 `RAG_MIN_SCORE` 从 `0.45` 微调为 `0.48`。这个阈值只在小型同域样本上形成初始分界，不能视为生产环境充分校准。
+
+代码回归通过 `12/12`；系统默认 Python 因缺少 `anthropic` 依赖无法收集测试，改用隔离项目环境后全部通过。以下 Rewrite/Rerank、Judge、路由、Skills 与 Tool 数据仍是上一轮设计理由实验；其中旧模型的坏案例保留为历史诊断，不能与本轮 SaaS 语料的 Qwen3 数字混作同一次严格模型对照。
 
 ## 最前面直接回答十个问题
 
@@ -22,7 +32,7 @@
 
 为区分“机制无效”和“输出预算不兼容”，又从 Direct 漏召回中固定选取 6 个困难案例，将**评测适配器**的结构化输出下限从 256 临时提高到 4096，正式代码和配置不变。6 次 Rewrite 均成功输出查询；Direct Top-5 为 `0/6`，Rewrite Top-5 为 `3/6`，Rewrite+Rerank Top-5 为 `4/6`。其中“`forbidden`”案例从 Direct Top-5 外进入最终第 1，“秒退”“两条一样的交易”“退的钱几天回原账户”分别进入第 2/5/4。
 
-最终采用的 Qwen3 Direct 在相同 22 条有答案数据上达到 Recall@1/3/5 `0.7727/0.9773/0.9773`、MRR `0.9091`。查询侧使用企业服务台专用英文 instruction，文档侧不添加 instruction；相对旧 Direct，25 条样本中 20 条改善、0 条退步、5 条不变。因此当前最高优先级结论是：**先使用更合适的基础 Embedding 解决候选召回，再决定是否值得承担 Rewrite/Rerank 的 LLM 延迟。**
+最终采用的 Qwen3 Direct 在 SaaS 化后的 22 条有答案数据上达到 Recall@1/3/5 `0.7727/0.9545/1.0000`、MRR `0.8879`。查询侧使用企业 SaaS 客户支持专用英文 instruction，文档侧不添加 instruction；相对重建的旧 Direct 结果，22 条有答案查询全部改善，3 条无答案查询排名状态不变。因此当前最高优先级结论是：**先使用更合适的基础 Embedding 解决候选召回，再决定是否值得承担 Rewrite/Rerank 的 LLM 延迟。**
 
 ### Q3. Rerank 主要提升 Recall 还是 Ranking Quality？
 
@@ -30,7 +40,7 @@
 
 6 条兼容性诊断中，Rewrite+Rerank 相比 Rewrite 将 MRR 从 `0.1583` 提到 `0.3250`，主要由 403 文档从 Top-5 外提升到第 1 驱动；但该阶段只有 3/6 次得到模型结果，另外 3 次触发 30 秒超时。Rerank Only 的 6 次则全部超时，排序完全未变。它说明 Rerank 在候选已召回时能改善顺序，也说明当前推理模型的延迟不满足在线链路要求，不能直接把 4096 设为生产修复。
 
-Qwen3 Direct 的 MRR 已达到 `0.9091`，所以 Rerank 的边际空间明显缩小。现阶段 Rerank 应从“必须执行的默认步骤”降为“在候选接近或复合请求时再评估的可选优化”；本轮没有修改既有 Rerank 控制流，但后续不应优先投入。
+Qwen3 Direct 的 MRR 已达到 `0.8879`，所以 Rerank 的边际空间明显缩小。现阶段 Rerank 应从“必须执行的默认步骤”降为“在候选接近或复合请求时再评估的可选优化”；本轮没有修改既有 Rerank 控制流，但后续不应优先投入。
 
 ### Q4. 相比 Single General Agent，Multi-Agent 到底解决了什么问题？
 
@@ -52,7 +62,7 @@ Qwen3 Direct 的 MRR 已达到 `0.9091`，所以 Rerank 的边际空间明显缩
 
 ### Q7. Dynamic Skills 相比全量 system prompt 有什么实际收益？
 
-在 9 条 General/Technical/Billing 样本上，全量注入平均 `3507` 字符，Dynamic Skills 平均 `1238.56` 字符，减少 `64.68%`；无关 Skill 数从平均 `2.0` 降到 `0`，必要 Skill 覆盖率为 `1.0000`。这是本轮较强的结构证据。
+在 SaaS 化后的 9 条 General/Technical/Billing 样本上，全量注入平均 `3888` 字符，Dynamic Skills 平均 `1356.44` 字符，减少 `65.11%`；无关 Skill 数从平均 `2.0` 降到 `0`，必要 Skill 覆盖率为 `1.0000`。这是本轮较强的结构证据。
 
 回答级 Rule Compliance 未执行，所以不能进一步声称动态注入让答案更准确；这属于保留的小范围证据边界，不影响 prompt 缩减结论。
 
@@ -67,15 +77,15 @@ Qwen3 Direct 的 MRR 已达到 `0.9091`，所以 Rerank 的边际空间明显缩
 
 本轮支持的是**机制**，不是正式参数最优性：按需 Skills 能减少 prompt；Primary + Supporting 能覆盖复合领域；Cache/Timeout/Breaker/Fallback 状态机按预期工作。
 
-以下仍主要是经验配置：Intent 的 70/20/10、置信度阈值 0.5、路由 supporting 阈值 0.45 和 0.55 比例、Top-K、12 秒 RAG timeout、Tool 30 秒 timeout、熔断 5 次/60 秒、Memory 15 条压缩/保留 5 条/24h TTL。Qwen3 的 `RAG_MIN_SCORE=0.45` 仅由当前 22 条正例和 3 条负例给出一个保守起点，不是充分校准的最优值。
+以下仍主要是经验配置：Intent 的 70/20/10、置信度阈值 0.5、路由 supporting 阈值 0.45 和 0.55 比例、Top-K、20 秒 RAG timeout、Tool 30 秒 timeout、熔断 5 次/60 秒、Memory 15 条压缩/保留 5 条/24h TTL。Qwen3 的 `RAG_MIN_SCORE=0.48` 仅由当前 22 条正例和 3 条负例给出一个保守起点，不是充分校准的最优值。
 
 ### Q10. “为什么要这样设计？”当前测试能给出哪些真实、可复现的证据？
 
 可以说：
 
-1. 将旧默认 Embedding 替换为 Qwen3 后，Direct Recall@5 从 `0.5227` 提升到 `0.9773`，MRR 从 `0.2303` 提升到 `0.9091`；25 条样本中 20 条排名改善、0 条退步、5 条不变。
+1. 将旧默认 Embedding 替换为 Qwen3，并将知识和查询统一到 SaaS 语境后，Direct Recall@5 从重建基线的 `0.5227` 提升到 `1.0000`，MRR 从 `0.2303` 提升到 `0.8879`；22 条有答案样本全部改善，3 条无答案样本排名状态不变。
 2. Current 路由在手工标注的 12 条角色覆盖数据上达到 `1.0000`，而 General-only 为 `0.1667`、Primary-only 为 `0.7917`。
-3. Dynamic Skills 将平均 prompt 字符减少 `64.68%`，同时保持必要 Skill 覆盖。
+3. Dynamic Skills 将平均 prompt 字符减少 `65.11%`，同时保持必要 Skill 覆盖。
 4. Tool 治理在缓存、超时、异常、连续故障和恢复注入下均表现出预期保护行为。
 
 不能说：新的三路 Intent 已优于 LLM Only、Qwen3 在真实大规模知识库仍能保持当前召回、Rerank 已带来线上净收益、多 Agent 已提高回答质量或分层 Memory 已提高事实保留。Judge 27 次调用中仅 10 次有效；聚合均分能区分高/中/低质量，但重复稳定性尚不足。
@@ -111,8 +121,8 @@ Qwen3 Direct 的 MRR 已达到 `0.9091`，所以 Rerank 的边际空间明显缩
 | 当前 Intent 模式 | LLM 70% + Qwen3 Embedding 20% + Pattern 10% |
 | Embedding | `Qwen/Qwen3-Embedding-0.6B`，1024 维，本地 CPU，归一化 |
 | RAG collection | `knowledge_base_qwen3_embedding_0_6b`（与旧向量隔离） |
-| RAG_MIN_SCORE | 新安装默认 `0.45`；仅小样本初始校准 |
-| RAG_TIMEOUT_SECONDS | 默认 `12` |
+| RAG_MIN_SCORE | 新安装默认 `0.48`；仅小样本初始校准 |
+| RAG_TIMEOUT_SECONDS | 默认 `20` |
 | LLM_TIMEOUT_SECONDS | 默认 `45` |
 | LLM_MAX_RETRIES | 默认 `2` |
 | Docker 镜像 | Compose 配置通过；Python 3.12 全量依赖解析通过；Qwen3 完整镜像尚未构建（权重约 1.2 GB） |
@@ -207,7 +217,7 @@ Pattern 分组 Accuracy：clear `0.6316`、paraphrase `0.3684`、context-depende
 这组结果暴露出两个硬问题：
 
 1. 当前模型失败时，第三方端点配置下会退化成 Pattern，44 条样本 Accuracy 不到 0.5；可靠性 fallback 存在，但语义能力明显不足。
-2. Embedding 模板仍包含较多旧售后表达，且轻量字符向量在中文企业服务台语义上表现较弱；它不能单独承担分类。
+2. 历史 Embedding 模板仍包含较多旧售后表达，且轻量字符向量在中文企业 SaaS 客户支持语义上表现较弱；它不能单独承担分类。
 
 ### 6.3 Weight Ablation
 
@@ -232,7 +242,7 @@ LLM Only 与 Current 已产生逐样本对照；整体上 Current 略低于 LLM 
 
 样本：22 条有答案、3 条无答案。无答案查询在不加拒答阈值的 Direct Top-5 中都返回了内容，比例 `1.0000`，说明“检索有返回”绝不能直接等价于“知识命中”。这也支持当前 API 层对最低分和 fallback 标志进行过滤的必要性。
 
-### 7.2 Direct Retrieval 观察到的坏案例
+### 7.2 历史重建基线 Direct Retrieval 观察到的坏案例
 
 下列查询的 gold 文档没有进入 Top-5：
 
@@ -285,33 +295,34 @@ LLM 运行细节也必须同时披露：Rewrite 6/6 正常结束且没有空文�
 
 ### 7.6 Embedding 对照：旧默认模型、BGE 与最终 Qwen3
 
-最终对 `Qwen/Qwen3-Embedding-0.6B` 做了真实下载、1024 维 CPU 推理、临时 Chroma 导入和 25 条 Direct Top-5 检索。旧基线逐样本结果复用 `rag_ablation.json`；Qwen3 使用同一批 20 篇演示知识重新编码，并按照官方推荐在查询侧加入企业服务台英文 instruction。BGE 是上一轮候选的历史对照，已从运行时配置中移除；三个模型的延迟不是同轮严格对照。
+最终对 `Qwen/Qwen3-Embedding-0.6B` 做了真实下载、1024 维 CPU 推理、临时 Chroma 导入和 25 条 Direct Top-5 检索。本轮 Qwen3 使用 SaaS 化后的 20 篇知识重新编码，并按照官方推荐只在查询侧加入企业 SaaS 客户支持英文 instruction。旧默认模型与 BGE 数字来自上一轮重建基线，是历史参照而非同一语料、同一时刻的严格模型赛跑；BGE 已从运行时配置中移除。
 
 | 模型 | Recall@1 | Recall@3 | Recall@5 | MRR | P95 ms |
 |---|---:|---:|---:|---:|---:|
 | Chroma 默认 `all-MiniLM-L6-v2` | 0.0909 | 0.3636 | 0.5227 | 0.2303 | 155.128 |
 | `BAAI/bge-small-zh-v1.5` | 0.8182 | 0.9091 | 1.0000 | 0.9068 | 14.645 |
-| `Qwen/Qwen3-Embedding-0.6B` | 0.7727 | 0.9773 | 0.9773 | 0.9091 | 100.618 |
+| `Qwen/Qwen3-Embedding-0.6B`（当前 SaaS 语料） | 0.7727 | 0.9545 | 1.0000 | 0.8879 | 242.649 |
 
-Qwen3 相对旧默认模型的 25 条逐样本比较为：`20` 条改善、`0` 条退步、`5` 条不变。代表案例：
+在当前 artifact 的逐样本结果中，22 条有答案查询相对重建的旧默认结果全部改善，3 条无答案查询排名状态不变，正例没有退步。代表案例：
 
 | 查询 | 旧模型排名 | Qwen3 排名 |
 |---|---:|---:|
-| 能登录但是某个资源 forbidden | Top-5 外 | 第 1 |
-| 电脑端程序启动后秒退 | Top-5 外 | 第 1 |
-| 票已经开了还能换公司名称吗 | Top-5 外 | 第 2 |
-| 一笔服务出现两条一样的交易 | Top-5 外 | 第 1 |
-| 退的钱一般几天回原账户 | Top-5 外 | 第 1 |
-| 服务台能处理哪些企业问题 | Top-5 外 | 第 1 |
-| 服务多次没解决而且影响扩大 | 第 3 | 第 2 |
+| 能登录 Workspace 但资源 forbidden | Top-5 外 | 第 1 |
+| SaaS 桌面客户端启动后秒退 | Top-5 外 | 第 1 |
+| 订阅发票已开还能换公司名称 | Top-5 外 | 第 1 |
+| 一笔订阅出现两条相同交易 | Top-5 外 | 第 1 |
+| SaaS 退款几天回原账户 | Top-5 外 | 第 1 |
+| RelayDesk 能处理哪些 SaaS 客户问题 | Top-5 外 | 第 1 |
+| 客户支持多次未解决且影响整个租户 | Top-5 外 | 第 5 |
 
 边界必须同时说明：
 
-- 这是 20 篇演示知识、22 条正例的小数据集，文档和评测语料同域，`Recall@5=0.9773` 不能外推到真实大库。
-- 3 条无答案查询仍都会返回候选，Qwen3 无答案 Top-1 分数为 `0.2965/0.4401/0.4076`；当前正例最低相关分为 `0.4763`，因此把默认阈值暂设为 `0.45`。负例太少，仍需扩展阈值曲线。
+- 这是 20 篇虚构 SaaS 知识、22 条正例的小数据集，文档和评测语料同域，`Recall@5=1.0000` 不能外推到真实大库。
+- `RAG-013` 的目标文档排第 3，`RAG-019` 排第 5，说明 Top-1 仍可能被相邻套餐或费用文档占据；Recall@5 高不等于最终注入顺序已经最优。
+- 3 条无答案查询仍都会返回原始候选，Qwen3 无答案 Top-1 分数为 `0.4209/0.4787/0.4523`；当前正例目标文档最低分为 `0.4927`，所以默认阈值暂设为 `0.48`。负例只有 3 条，必须继续扩展阈值曲线。
 - Intent Embedding-only Accuracy/Macro-F1 从字符 n-gram 的 `0.2889/0.2520` 提升到 Qwen3 的 `0.4444/0.4040`，说明分支更有用但不能单独取代 LLM。否定表达、上下文依赖和相邻细粒度意图仍有明显 Bad Case。
 - Qwen3 权重约 1.2 GB；Docker 构建阶段预下载，运行时共用一个模型实例。更换模型必须同步更换 collection 并重建向量。
-- 选型不是“Qwen3 在所有本地指标都优于 BGE”：它的 Recall@3 和 MRR 略高，但 Recall@1、Recall@5 与 Intent-only 略低。最终选择依据是 MTEB 候选、Apache-2.0 许可、100+ 语言、32K 上下文、instruction-aware 能力与项目内指标共同满足要求。
+- 选型不能表述为“Qwen3 在所有本地指标都优于 BGE”，因为 BGE 数字与本轮 SaaS 语料不是严格同轮对照。最终选择依据是公开榜单候选、Apache-2.0 许可、多语言与长上下文、instruction-aware 能力，以及当前项目内 Recall@5/MRR 已达到可接受水平。
 
 ## 8. Multi-Agent Ablation
 
@@ -362,11 +373,11 @@ Single General、Primary Only、Current Multi-Agent 的实际回答没有生成�
 
 | 指标 | 全量 Skills | Dynamic Skills |
 |---|---:|---:|
-| 平均 prompt 字符数 | 3507.00 | 1238.56 |
+| 平均 prompt 字符数 | 3888.00 | 1356.44 |
 | 平均无关 Skill 数 | 2.00 | 0.00 |
 | 必要 Skill 覆盖率 | 1.0000 | 1.0000 |
 
-平均字符减少率为 `0.6468`。三个 Skills 加载成功，错误列表为空。
+平均字符减少率为 `0.6511`。三个 Skills 加载成功，错误列表为空。
 
 已证明：动态加载减少无关规则和上下文占用。未证明：它提高回答准确性或合规性，因为 Rule Compliance 需要实际模型回答。
 
@@ -418,7 +429,7 @@ Judge 的正确定位是自动化回归信号，不是绝对 ground truth。恢�
 
 下面解释自动汇总案例和 10 条 RAG 诊断。这里的“坏案例”包括真实运行失败和重建基线的结构缺口；它们都不代表曾在线上发生过。
 
-### 13.1 Direct Retrieval：10 个 Top-5 漏召回案例
+### 13.1 历史重建基线 Direct Retrieval：10 个 Top-5 漏召回案例
 
 所有 RAG 版本均已尝试执行，但 Rewrite/Rerank 大量发生结构化输出回退；因此下表证明 Direct Retrieval 存在问题，也证明当前运行配置尚未兑现优化收益。
 
@@ -465,13 +476,13 @@ Judge 的正确定位是自动化回归信号，不是绝对 ground truth。恢�
 
 | Bad Case | 输入 | V0 无关 Skill 数 | Current 无关 Skill 数 | 具体含义 |
 |---|---|---:|---:|---|
-| BC-SKILL-001 | 企业统一服务台能做什么 | 2 | 0 | 全量方式会额外注入 technical 与 billing 规则；Current 只选 general |
+| BC-SKILL-001 | RelayDesk 能处理哪些 SaaS 客户问题 | 2 | 0 | 全量方式会额外注入 technical 与 billing 规则；Current 只选 general |
 | BC-SKILL-002 | 我要投诉并转人工 | 2 | 0 | 全量方式会携带无关技术/费用 SOP；Current 只保留综合服务与升级边界 |
-| BC-SKILL-003 | 企业账号登录报 401 | 2 | 0 | 全量方式会混入 general 与 billing；Current 只注入 technical_support |
+| BC-SKILL-003 | 租户账号通过 SSO 登录报 401 | 2 | 0 | 全量方式会混入 general 与 billing；Current 只注入 technical_support |
 | BC-SKILL-004 | 页面出现 500，怎么安全排查 | 2 | 0 | Current 只保留技术低风险、可逆排查与人工升级规则 |
-| BC-SKILL-005 | VPN 证书告警怎么办 | 2 | 0 | Current 避免把费用与通用服务规则带入安全排查 |
+| BC-SKILL-005 | Webhook 验签失败并提示证书异常 | 2 | 0 | Current 避免把费用与通用服务规则带入安全排查 |
 
-这 5 条的 Measured Effect 是 prompt 结构变化，不是回答质量。平均字符数从 3507 降到 1238.56，必要 Skill 覆盖仍为 1.0；但“无关键词同义表达是否漏装 Skill”还没有单独形成负向数据集。
+这 5 条的 Measured Effect 是 prompt 结构变化，不是回答质量。平均字符数从 3888 降到 1356.44，必要 Skill 覆盖仍为 1.0；但“无关键词同义表达是否漏装 Skill”还没有单独形成负向数据集。
 
 ### 13.4 Tool Reliability：5 个故障注入案例
 
@@ -510,7 +521,7 @@ Judge 的正确定位是自动化回归信号，不是绝对 ground truth。恢�
 ### RAG
 
 1. 旧 Direct：简单、低调用数，但 `all-MiniLM-L6-v2` Recall@5 仅 0.5227。
-2. Qwen3 Direct：Recall@5 0.9773、MRR 0.9091，证明先选对基础向量模型比增加 LLM 链路更重要。
+2. Qwen3 Direct：当前 SaaS 语料 Recall@5 1.0000、MRR 0.8879，证明先选对基础向量模型比增加 LLM 链路更重要。
 3. + Rewrite：旧基线正式参数下 24/25 次回退；扩容虽有案例收益，但 P95 约 15.56 秒。
 4. + Rerank：旧基线兼容诊断出现 1 条排序改善，但大量请求在 30 秒超时后回退；Qwen3 后优先级下降。
 5. + score/fallback filter：防止“有返回即命中”；Qwen3 的新初始阈值为 0.45，仍需更多负例校准。
@@ -524,8 +535,8 @@ Judge 的正确定位是自动化回归信号，不是绝对 ground truth。恢�
 
 ### Skills
 
-1. 全量规则：必要规则全覆盖，但每次带入 3507 字符和 2 个无关 Skill。
-2. Dynamic：平均字符减少 64.68%，必要 Skill 仍覆盖。
+1. 全量规则：必要规则全覆盖，但每次带入 3888 字符和 2 个无关 Skill。
+2. Dynamic：平均字符减少 65.11%，必要 Skill 仍覆盖。
 
 ### Tool
 
@@ -545,7 +556,7 @@ Judge 的正确定位是自动化回归信号，不是绝对 ground truth。恢�
 
 1. **复杂度与运行收益不对称**：Intent Fusion、Rewrite/Rerank 和 Judge 已发起真实 LLM 测试，但推理模型的最终 JSON 经常被 Token 上限截断，复杂机制大量退化。
 2. **本地模型增加镜像和冷启动成本**：Qwen3 模型约 1.2 GB，并引入 PyTorch/Transformers；Docker 已预下载，但镜像会明显变大。
-3. **小数据集可能高估 Qwen3**：演示知识与问题同域，Recall@5 0.9773 不是大规模生产效果承诺。
+3. **小数据集可能高估 Qwen3**：SaaS 知识与问题同域，Recall@5 1.0000 不是大规模生产效果承诺。
 4. **规则对关键词敏感**：Intent Pattern、路由复合检测和 Skills 选择都依赖词表，否定、金额和错误码可能产生误判。
 5. **Synthesis 额外增加一次 LLM 调用**：可能提升整合，也可能丢失专业细节或增加延迟。
 6. **Memory 错误会放大**：错误摘要和画像可能跨轮次持续影响答案。
@@ -555,8 +566,8 @@ Judge 的正确定位是自动化回归信号，不是绝对 ground truth。恢�
 
 ### 17.1 Dynamic Skills 的结构收益
 
-- 平均字符：3507 → 1238.56。
-- 减少率：64.68%。
+- 平均字符：3888 → 1356.44。
+- 减少率：65.11%。
 - 无关 Skill：2.0 → 0。
 - 必要 Skill 覆盖：1.0。
 
@@ -611,7 +622,7 @@ Cache、Timeout、Fallback、Breaker 和 Recovery 均通过 Fake Tool 故障注�
 
 #### 背景
 
-企业服务台请求可能同时包含技术与费用诉求。
+企业 SaaS 客户请求可能同时包含技术与订阅费用诉求。
 
 #### Baseline
 
@@ -673,7 +684,7 @@ General、Technical、Billing 有不同 SOP 和人工边界。
 
 #### Result
 
-平均字符减少 64.68%，平均无关 Skill 从 2 降到 0，必要覆盖为 1.0。
+平均字符减少 65.11%，平均无关 Skill 从 2 降到 0，必要覆盖为 1.0。
 
 #### Trade-off
 
@@ -733,7 +744,7 @@ Original Query → ChromaDB Top-K。
 
 #### Design Choice
 
-先把默认英文向量模型替换为 Qwen3 Embedding，并使用企业服务台查询 instruction；保留 Query Rewrite、多查询召回、去重、Rerank 作为兼容能力。
+先把默认英文向量模型替换为 Qwen3 Embedding，并使用企业 SaaS 客户支持查询 instruction；保留 Query Rewrite、多查询召回、去重、Rerank 作为兼容能力。
 
 #### Why
 
@@ -745,7 +756,7 @@ Original Query → ChromaDB Top-K。
 
 **兼容性诊断**：在 6 条 Direct 全部漏召回的困难样本上，仅提高 benchmark 输出预算后，Rewrite 命中 3 条，Rewrite+Rerank 命中 4 条；403 案例升到第 1。但 Rewrite P95 约 15.56 秒，完整链路 P95 约 57.21 秒，不能作为生产参数建议。
 
-**Embedding 改造结果**：Qwen3 Direct 在 22 条有答案样本上 Recall@5 为 0.9773、MRR 为 0.9091；相对旧默认模型，25 条中 20 条排名改善、0 条退步、5 条不变。它以更低链路复杂度覆盖了原本希望 Rewrite/Rerank 解决的大部分问题。
+**Embedding 改造结果**：SaaS 化后 Qwen3 Direct 在 22 条有答案样本上 Recall@5 为 1.0000、MRR 为 0.8879；相对重建的旧默认结果，22 条正例全部改善、0 条退步，3 条无答案排名状态不变。它以更低链路复杂度覆盖了原本希望 Rewrite/Rerank 解决的大部分问题。
 
 #### Trade-off
 
@@ -756,9 +767,9 @@ Original Query → ChromaDB Top-K。
 可以直接讨论：
 
 - 路由关注点角色覆盖率：0.1667 / 0.7917 / 1.0000。
-- Dynamic Skills 平均 prompt 字符减少率：64.68%。
+- Dynamic Skills 平均 prompt 字符减少率：65.11%。
 - Direct RAG：Recall@1 0.0909、Recall@3 0.3636、Recall@5 0.5227、MRR 0.2303、P95 155.128ms。
-- Qwen3 Direct RAG：Recall@1 0.7727、Recall@3 0.9773、Recall@5 0.9773、MRR 0.9091；25 条中 20 改善、0 退步、5 不变。
+- Qwen3 Direct RAG（当前 SaaS 语料）：Recall@1 0.7727、Recall@3 0.9545、Recall@5 1.0000、MRR 0.8879；22 条有答案查询改善、0 条正例退步，3 条无答案排名状态不变。
 - Intent Embedding-only：字符 n-gram Accuracy/Macro-F1 0.2889/0.2520，Qwen3 为 0.4444/0.4040。
 - Rewrite/Current/Rerank-only：指标与 Direct 相同；P95 分别约 6.73s、6.85s、6.08s。
 - 兼容性诊断（6 条定向困难样本、非总体指标）：Direct Top-5 0/6，Rewrite 3/6，Rewrite+Rerank 4/6；Rerank 阶段频繁触发 30 秒超时。

@@ -1,5 +1,5 @@
 """
-RelayDesk 企业统一服务台 — FastAPI 入口
+RelayDesk 企业级 SaaS 统一客户服务平台 — FastAPI 入口
 
 启动时打印小熊饼干图案。
 所有核心组件在 lifespan 中初始化，通过环境变量配置。
@@ -38,7 +38,7 @@ BANNER = r"""
     ʕ•ᴥ•ʔ  ʕ•ᴥ•ʔ  ʕ•ᴥ•ʔ
    ╔══════════════════════╗
    ║   RelayDesk  v2.0     ║
-   ║    企业统一服务台     ║
+   ║  企业级 SaaS 客户服务  ║
    ╚══════════════════════╝
     ʕ•ᴥ•ʔ  ʕ•ᴥ•ʔ  ʕ•ᴥ•ʔ
 """
@@ -89,7 +89,7 @@ def _build_embedding_function():
         query_prompt_name=os.getenv("EMBEDDING_QUERY_PROMPT", "query").strip(),
         query_instruction=os.getenv(
             "EMBEDDING_QUERY_INSTRUCTION",
-            "Given an enterprise service desk request, retrieve the most relevant policy or troubleshooting passage that answers the request",
+            "Given an enterprise SaaS customer support request, retrieve the most relevant product documentation, account policy, billing rule, or troubleshooting passage that answers the request",
         ).strip(),
         normalize_embeddings=True,
     )
@@ -242,7 +242,7 @@ async def lifespan(app: FastAPI):
 
 # ── FastAPI ───────────────────────────────────────────────────────────────────
 app = FastAPI(
-    title="RelayDesk 企业统一服务台",
+    title="RelayDesk 企业级 SaaS 统一客户服务平台",
     version="2.0.0",
     lifespan=lifespan,
     docs_url="/docs",
@@ -420,7 +420,7 @@ async def _build_knowledge_context(message: str, intent=None, top_k: int = 3) ->
         if not result.success or not isinstance(result.data, list) or not result.data:
             return "", False
 
-        min_score = float(os.getenv("RAG_MIN_SCORE", "0.45"))
+        min_score = float(os.getenv("RAG_MIN_SCORE", "0.48"))
         parts = ["[知识库检索结果]"]
         used = False
         for i, item in enumerate(result.data[:top_k], start=1):

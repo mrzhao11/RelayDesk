@@ -10,7 +10,7 @@ import uuid
 
 CASES = [
     ("你好", {"agents": {"general"}, "knowledge": False}),
-    ("忘记企业账号密码怎么办？", {"agents": {"technical"}}),
+    ("忘记租户账号密码怎么办？", {"agents": {"technical"}}),
     ("登录一直报401。", {"agents": {"technical"}}),
     ("页面出现500错误应该怎么处理？", {"agents": {"technical"}}),
     ("如何修改发票抬头？", {"agents": {"billing"}}),

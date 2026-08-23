@@ -29,8 +29,8 @@ from evaluation.benchmark.run_design_rationale import (
 MODEL_NAME = "Qwen/Qwen3-Embedding-0.6B"
 MODEL_SOURCE = os.getenv("EMBEDDING_MODEL_SOURCE", MODEL_NAME)
 QUERY_INSTRUCTION = (
-    "Given an enterprise service desk request, retrieve the most relevant "
-    "policy or troubleshooting passage that answers the request"
+    "Given an enterprise SaaS customer support request, retrieve the most relevant "
+    "product documentation, account policy, billing rule, or troubleshooting passage that answers the request"
 )
 
 

@@ -30,7 +30,7 @@ class RoutingTests(unittest.TestCase):
 
     def test_account_profile_routes_to_general(self):
         request = Request(
-            message="我想修改企业账号邮箱",
+            message="我想修改租户账号邮箱",
             user_id="u1",
             conv_id="c1",
             intent=IntentCategory.ACCOUNT,

@@ -3,8 +3,8 @@
   "version": "1.0",
   "description": "Gold role sets measure concern coverage and must not be interpreted as end-to-end response quality.",
   "samples": [
-    {"id":"ROUTE-001","message":"企业统一服务台能做什么？","intent":"query","required_roles":["general"],"scenario":"single-domain"},
-    {"id":"ROUTE-002","message":"我想修改账户绑定邮箱。","intent":"account","required_roles":["general"],"scenario":"single-domain"},
+    {"id":"ROUTE-001","message":"RelayDesk 能处理哪些 SaaS 客户问题？","intent":"query","required_roles":["general"],"scenario":"single-domain"},
+    {"id":"ROUTE-002","message":"我想修改租户账户绑定邮箱。","intent":"account","required_roles":["general"],"scenario":"single-domain"},
     {"id":"ROUTE-003","message":"登录报 401。","intent":"technical_login","required_roles":["technical"],"scenario":"single-domain"},
     {"id":"ROUTE-004","message":"页面一直返回 500。","intent":"technical","required_roles":["technical"],"scenario":"single-domain"},
     {"id":"ROUTE-005","message":"如何修改发票抬头？","intent":"invoice","required_roles":["billing"],"scenario":"single-domain"},

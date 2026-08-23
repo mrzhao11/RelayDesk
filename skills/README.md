@@ -6,7 +6,7 @@ RelayDesk 启动时会从 `RELAYDESK_SKILLS_DIR` 读取 Skills，并在匹配用
 
 ```text
 skills/general_customer_service/SKILL.md  # 综合服务：咨询、澄清、流程说明、分流和人工升级
-skills/technical_support/SKILL.md         # 技术支持：企业账号、权限错误、软件故障和安全边界
+skills/technical_support/SKILL.md         # 技术支持：租户账号、SSO、Workspace 权限、API/SDK 和安全边界
 skills/billing_support/SKILL.md           # 费用结算：费用、支付、退款、发票、订阅和财务核验
 ```
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# RelayDesk 企业统一服务台 - Docker 部署脚本
+# RelayDesk 企业级 SaaS 统一客户服务平台 - Docker 部署脚本
 
 
 set -e
@@ -254,7 +254,7 @@ restore_data() {
 # 函数：显示帮助信息
 show_help() {
     cat << EOF
-RelayDesk 企业统一服务台 - Docker 部署脚本
+RelayDesk 企业级 SaaS 统一客户服务平台 - Docker 部署脚本
 
 用法: ./docker-deploy.sh [命令]
 
