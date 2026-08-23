@@ -34,6 +34,25 @@
 
 最终采用的 Qwen3 Direct 在 SaaS 化后的 22 条有答案数据上达到 Recall@1/3/5 `0.7727/0.9545/1.0000`、MRR `0.8879`。查询侧使用企业 SaaS 客户支持专用英文 instruction，文档侧不添加 instruction；相对重建的旧 Direct 结果，22 条有答案查询全部改善，3 条无答案查询排名状态不变。因此当前最高优先级结论是：**先使用更合适的基础 Embedding 解决候选召回，再决定是否值得承担 Rewrite/Rerank 的 LLM 延迟。**
 
+### Q2.1 Hybrid Retrieval 新实验：BM25 + RRF 是否值得加入？
+
+本轮保留 `Qwen/Qwen3-Embedding-0.6B` 和 ChromaDB cosine Dense，不更换模型或向量库。新增 section/paragraph/sentence-aware Chunker、进程内 BM25、中英文技术 Tokenizer，以及 `RRF(k=60)`。Rewrite 和 Rerank 保留，但改为可选阶段；Rerank 只处理最多 15 个 RRF 候选，失败继续使用 RRF 顺序。
+
+新 Qwen3 推理真实尝试了两次，均被本机以 exit `137` 终止；Docker 备用构建又停在基础镜像元数据网络阶段，因此不能声称完成了新 Hard Set 的 Dense/Hybrid 端到端跑数。为避免完全没有 A/B 证据，实验复用了仓库已验证、未改写的 Qwen3 Direct Top-5 候选，再对当前 20 篇知识现场执行 BM25 和 RRF。该 replay 仍使用真实 Qwen3 排名，但 Dense 候选池只有历史保存的 Top-5，且没有重新测量 Qwen 推理延迟。
+
+| 22 条有答案样本 | Hit@1 | Recall@1 | Hit@3 | Recall@3 | Recall@5 | MRR |
+|---|---:|---:|---:|---:|---:|---:|
+| Dense Direct（已验证历史候选） | 0.8182 | 0.7727 | 0.9545 | 0.9545 | 1.0000 | 0.8879 |
+| Hybrid Direct（verified Dense replay + 新 BM25/RRF） | 0.8636 | 0.8182 | 1.0000 | 1.0000 | 1.0000 | 0.9318 |
+
+逐查询结果为 3 条改善、0 条退化、19 条不变。改善案例是 `RAG-013` 从第 3 到第 2、`RAG-019` 从第 5 到第 2、`RAG-024` 从第 2 到第 1。新 BM25/RRF 阶段自身 P50/P95 约 `0.179/0.297ms`，但 Hybrid 总延迟未重新测量，不能把这个阶段耗时当成端到端耗时。
+
+新增 12 条 lexical hard set，保存明确的 `source/section_path/chunk_index/chunk_id`。现场 BM25-only 的 Hit/Recall@1 和 MRR 均为 `1.0000`，证明 Tokenizer 能保留 `401/403/500`、`E_SDK_INIT_42`、SSO、OAuth、SDK、invoice、refund、Workspace/Organization 等精确项；但该集合尚无新 Qwen Dense 排名，所以不能用它宣称 Hybrid 相对 Dense 提升。
+
+基于现有 replay 的零退化和很低的 lexical/fusion 开销，本轮将 `hybrid` 作为可回退的默认模式，同时保留 `dense` 配置开关。这个建议是工程上的渐进启用，不是最终生产结论；上线前仍应在内存充足环境重跑完整 Qwen Dense/Hybrid、无答案拒答和总延迟。
+
+本轮完整代码回归为 `37/37`。新增测试覆盖 Markdown heading、段落累积、长段落句子 fallback、无标点 hard split、自然边界 overlap、稳定 chunk ID 与 gold 一致性、metadata、BM25 精确状态码/中英术语、RRF 聚合/去重/缺失检索器/稳定排序、Dense+BM25 多查询合并，以及 Rerank JSON 失败回退。
+
 ### Q3. Rerank 主要提升 Recall 还是 Ranking Quality？
 
 从机制看，Rerank 目标仍是 **Ranking Quality / MRR**。正式参数下，Rerank Only 发起 25 次调用，全部在 256 Token 上限结束且没有最终文本，生产逻辑回退为原排序，所以 MRR 仍为 `0.2303`。
@@ -120,7 +139,7 @@ Qwen3 Direct 的 MRR 已达到 `0.8879`，所以 Rerank 的边际空间明显缩
 | ChromaDB | TCP 可连接 |
 | 当前 Intent 模式 | LLM 70% + Qwen3 Embedding 20% + Pattern 10% |
 | Embedding | `Qwen/Qwen3-Embedding-0.6B`，1024 维，本地 CPU，归一化 |
-| RAG collection | `knowledge_base_qwen3_embedding_0_6b`（与旧向量隔离） |
+| RAG collection | 当前为 `knowledge_base_qwen3_chunk_v2`；旧实测使用 `knowledge_base_qwen3_embedding_0_6b`，两者隔离 |
 | RAG_MIN_SCORE | 新安装默认 `0.48`；仅小样本初始校准 |
 | RAG_TIMEOUT_SECONDS | 默认 `20` |
 | LLM_TIMEOUT_SECONDS | 默认 `45` |

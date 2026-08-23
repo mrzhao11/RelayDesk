@@ -2,9 +2,10 @@
 RAG 知识库 —— 基于 ChromaDB 的真实检索实现。
 
 功能：
-  1. 文档导入：将文本切片后存入 ChromaDB（自动生成 Embedding）
-  2. 语义检索：根据 query 从知识库中检索最相关的文档片段
-  3. 与内部工具治理框架集成：作为 knowledge_search 工具的真实 handler
+  1. 文档导入：结构化切片后存入 Qwen3/ChromaDB Dense index
+  2. 对同一批稳定 chunk 构建进程内 BM25 lexical index
+  3. 用 RRF 融合 Dense、BM25 和 Multi-Query 排名
+  4. 与内部工具治理框架集成：作为 knowledge_search 工具的真实 handler
 
 ChromaDB 在这里的角色：
   - memory/ 中用于存储对话记忆（情景记忆 + 用户画像）
@@ -12,11 +13,15 @@ ChromaDB 在这里的角色：
   两者是不同的 collection，互不干扰。
 """
 import asyncio
-import hashlib
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 import chromadb
+
+from rag.bm25_retriever import BM25Retriever
+from rag.chunker import StructuredChunker
+from rag.fusion import reciprocal_rank_fusion
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +34,7 @@ class KnowledgeBase:
     all-MiniLM-L6-v2，确保现有测试和调用方兼容。
     """
 
-    COLLECTION_NAME = "knowledge_base"
+    COLLECTION_NAME = "knowledge_base_qwen3_chunk_v2"
 
     def __init__(
         self,
@@ -39,8 +44,18 @@ class KnowledgeBase:
         embedding_function: Optional[Any] = None,
         embedding_model: Optional[str] = None,
         collection_name: Optional[str] = None,
+        chunk_size: Optional[int] = None,
+        chunk_overlap: Optional[int] = None,
+        rrf_k: Optional[int] = None,
+        load_defaults: bool = True,
     ):
         self._embedding_function = embedding_function
+        self._chunker = StructuredChunker(
+            chunk_size=chunk_size or int(os.getenv("RAG_CHUNK_SIZE", "500")),
+            overlap=chunk_overlap if chunk_overlap is not None else int(os.getenv("RAG_CHUNK_OVERLAP", "80")),
+        )
+        self._rrf_k = rrf_k or int(os.getenv("RAG_RRF_K", "60"))
+        self._bm25 = BM25Retriever()
         # 优先连接独立 ChromaDB 服务（服务端内置 embedding 模型，客户端无需下载）
         self._use_server = False
         try:
@@ -77,8 +92,10 @@ class KnowledgeBase:
         self._collection = self._client.get_or_create_collection(**collection_args)
 
         # 如果知识库为空，导入企业级 SaaS 客户支持知识。
-        if self._collection.count() == 0:
+        if self._collection.count() == 0 and load_defaults:
             self._load_default_docs()
+        else:
+            self._rebuild_bm25()
 
     # ── 文档管理 ──────────────────────────────────────────────────────────────
 
@@ -86,26 +103,23 @@ class KnowledgeBase:
         """
         批量导入文档到知识库。
 
-        documents 格式: [{"title": "...", "content": "..."}, ...]
-        长文档会自动切片（每片 500 字）。
+        documents 格式: [{"title": "...", "content": "...", "source": "..."}, ...]
+        长文档按 Markdown section、段落、句子和自然边界 overlap 切片。
         """
         ids, docs, metas = [], [], []
 
         for doc in documents:
-            title   = doc.get("title", "")
-            content = doc.get("content", "")
-            chunks  = self._chunk_text(content, chunk_size=500)
-
-            for i, chunk in enumerate(chunks):
-                doc_id = hashlib.md5(f"{title}_{i}_{chunk[:50]}".encode()).hexdigest()
-                ids.append(doc_id)
-                docs.append(chunk)
-                metas.append({"title": title, "chunk_index": i, "total_chunks": len(chunks)})
+            chunks = self._chunker.chunk_document(doc)
+            for chunk in chunks:
+                ids.append(chunk["chunk_id"])
+                docs.append(chunk["content"])
+                metas.append({key: value for key, value in chunk.items() if key != "content"})
 
         if ids:
             # ChromaDB 会自动生成 Embedding
-            self._collection.add(ids=ids, documents=docs, metadatas=metas)
+            self._collection.upsert(ids=ids, documents=docs, metadatas=metas)
             logger.info(f"知识库导入 {len(ids)} 个文档片段")
+            self._rebuild_bm25()
 
         return len(ids)
 
@@ -133,7 +147,8 @@ class KnowledgeBase:
 
         items = []
         if results["documents"] and results["documents"][0]:
-            for doc, meta, dist in zip(
+            for chunk_id, doc, meta, dist in zip(
+                results["ids"][0],
                 results["documents"][0],
                 results["metadatas"][0],
                 results["distances"][0],
@@ -143,6 +158,11 @@ class KnowledgeBase:
                     "content":  doc,
                     "score":    round(1.0 - dist, 4),  # ChromaDB 返回距离，转为相似度
                     "chunk":    meta.get("chunk_index", 0),
+                    "chunk_id": chunk_id,
+                    "source": meta.get("source", ""),
+                    "section_path": meta.get("section_path", meta.get("title", "")),
+                    "chunk_index": meta.get("chunk_index", 0),
+                    "total_chunks": meta.get("total_chunks", 1),
                 })
 
         return items
@@ -150,6 +170,40 @@ class KnowledgeBase:
     async def search_async(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         """异步检索；ChromaDB 客户端为同步实现，因此放入线程池执行。"""
         return await asyncio.to_thread(self.search, query, top_k)
+
+    def search_bm25(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+        """Lexical retrieval over the same stable chunks used by ChromaDB."""
+        return self._bm25.search(query, top_k=top_k)
+
+    def retrieve(
+        self,
+        query: str,
+        top_k: int = 5,
+        queries: Optional[List[str]] = None,
+        use_bm25: bool = True,
+        candidate_k: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Run dense/BM25 for one or more queries and combine ranks with RRF."""
+        query_list = list(dict.fromkeys([q.strip() for q in (queries or [query]) if q and q.strip()]))
+        if not query_list:
+            return []
+        recall_k = candidate_k or max(top_k, 10)
+        rankings = []
+        for sub_query in query_list:
+            rankings.append(("dense", sub_query, self.search(sub_query, recall_k)))
+            if use_bm25:
+                rankings.append(("bm25", sub_query, self.search_bm25(sub_query, recall_k)))
+        return reciprocal_rank_fusion(rankings, k=self._rrf_k)[:top_k]
+
+    async def retrieve_async(
+        self,
+        query: str,
+        top_k: int = 5,
+        queries: Optional[List[str]] = None,
+        use_bm25: bool = True,
+        candidate_k: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        return await asyncio.to_thread(self.retrieve, query, top_k, queries, use_bm25, candidate_k)
 
     @property
     def doc_count(self) -> int:
@@ -173,34 +227,43 @@ class KnowledgeBase:
         """
         query = params.get("query", "")
         top_k = params.get("top_k", 5)
-        return await self.search_async(query, top_k=top_k)
+        mode = str(params.get("mode", "hybrid"))
+        queries = params.get("queries")
+        candidate_k = params.get("candidate_k")
+        if mode == "dense" and not queries:
+            return await self.search_async(query, top_k=top_k)
+        return await self.retrieve_async(
+            query,
+            top_k=top_k,
+            queries=queries,
+            use_bm25=mode == "hybrid",
+            candidate_k=candidate_k,
+        )
 
     # ── 内部方法 ──────────────────────────────────────────────────────────────
 
     def _chunk_text(self, text: str, chunk_size: int = 500) -> List[str]:
-        """将长文本按 chunk_size 切片，保留语义完整性（按句号/换行切分）。"""
-        if len(text) <= chunk_size:
-            return [text] if text.strip() else []
+        """兼容旧调用方；新导入流程使用带 metadata 的 StructuredChunker。"""
+        chunker = StructuredChunker(chunk_size=chunk_size, overlap=self._chunker.overlap)
+        return [chunk["content"] for chunk in chunker.chunk_document({"title": "Default", "content": text})]
 
+    def _all_chunks(self) -> List[Dict[str, Any]]:
+        result = self._collection.get(include=["documents", "metadatas"])
         chunks = []
-        current = ""
-        # 按句子切分
-        sentences = text.replace("\n", "。").split("。")
-        for sent in sentences:
-            sent = sent.strip()
-            if not sent:
-                continue
-            if len(current) + len(sent) + 1 > chunk_size:
-                if current:
-                    chunks.append(current)
-                current = sent
-            else:
-                current = f"{current}。{sent}" if current else sent
-
-        if current:
-            chunks.append(current)
-
+        for chunk_id, content, metadata in zip(
+            result.get("ids", []), result.get("documents", []), result.get("metadatas", [])
+        ):
+            meta = metadata or {}
+            chunks.append({
+                **meta,
+                "chunk_id": chunk_id,
+                "content": content or "",
+                "section_path": meta.get("section_path", meta.get("title", "")),
+            })
         return chunks
+
+    def _rebuild_bm25(self) -> None:
+        self._bm25.build(self._all_chunks())
 
     def _load_default_docs(self) -> None:
         """导入虚构 SaaS 产品的通用客户支持知识。"""

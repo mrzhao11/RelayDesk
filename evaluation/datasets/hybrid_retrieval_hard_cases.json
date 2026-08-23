@@ -1,0 +1,34 @@
+{
+  "dataset_name": "RelayDesk Hybrid Retrieval Lexical Hard Set",
+  "version": "1.0",
+  "description": "Chunk-level gold set for exact technical tokens and operationally adjacent SaaS support procedures.",
+  "documents": [
+    {"source":"kb://auth/sso","title":"SSO Authentication Failure","content":"# Authentication\n## SSO Login Failure\nSSO login failure should be checked against the tenant IdP metadata, SAML audience, ACS URL, clock skew, and member mapping. This procedure is different from local password recovery. 适用于 SSO 登录失败。"},
+    {"source":"kb://auth/password","title":"Local Password Login Failure","content":"# Authentication\n## Password Login Failure\nFor a local password login failure, verify the account email, reset channel, lock status, and verification code delivery. Do not change SSO metadata for this case."},
+    {"source":"kb://oauth/refresh","title":"OAuth Token Refresh Failure","content":"# API Authentication\n## OAuth2 Refresh Token\nWhen an oauth2 refresh_token cannot be refreshed, verify client_id, redirect_uri, grant_type, token expiry, and revoked consent. Never disclose client_secret."},
+    {"source":"kb://sdk/init","title":"SDK Initialization Error","content":"# SDK\n## Initialization\nFor E_SDK_INIT_42 or SDK initialization errors, record SDK language and version, runtime version, initialization options, and a redacted stack trace."},
+    {"source":"kb://webhook/403","title":"Webhook 403 Signature Rejection","content":"# Webhook\n## HTTP 403\nA Webhook returning 403 is commonly rejected after authentication because of signature, timestamp window, callback allowlist, or endpoint policy. Record delivery_id and a redacted signature header."},
+    {"source":"kb://api/500","title":"API 500 Server Error","content":"# API\n## HTTP 500\nAn API request returning 500 indicates a server-side processing failure. Record request_id, API path, timestamp, region, response body, and whether the write can be safely retried."},
+    {"source":"kb://billing/invoice","title":"Invoice Issuance Failure","content":"# Billing\n## Invoice\nFor an invoice issuance failure, verify invoice title, tax ID, billing entity, billing period, and invoice eligibility. Real issuance requires finance verification. 适用于 invoice 开票失败。"},
+    {"source":"kb://billing/refund","title":"Refund Status Verification","content":"# Billing\n## Refund Status\nA refund status request requires the refund reference, original transaction, approval time, payment channel, and redacted account evidence. The knowledge base cannot confirm a real refund state."},
+    {"source":"kb://billing/duplicate","title":"Duplicate Charge Investigation","content":"# Billing\n## Duplicate Charge\nFor duplicate charge investigation, compare two transaction IDs, amounts, timestamps, currency, subscription ID, and payment channel before manual finance verification."},
+    {"source":"kb://workspace/members","title":"Workspace Member and Seat Management","content":"# Workspace\n## Members and Seats\nWorkspace member invitations and seat assignments require workspace_id, member email, role, available seat count, and tenant administrator verification."},
+    {"source":"kb://organization/domain","title":"Organization Domain Verification","content":"# Organization\n## Domain Verification\nOrganization domain verification requires DNS ownership proof, organization_id, verified domain, and tenant administrator approval. It is not a Workspace member invitation."},
+    {"source":"kb://subscription/seat-sync","title":"Subscription Seat Synchronization","content":"# Subscription\n## Successful Payment but Missing Seats\nIf subscription renewal or seat purchase succeeded but seat count did not increase, record subscription_id, invoice, paid quantity, current seat count, workspace_id, and synchronization time. 适用于订阅扣款成功但席位没有增加。"},
+    {"source":"kb://subscription/payment-failed","title":"Subscription Payment Failure","content":"# Subscription\n## Payment Failed\nIf subscription payment failed, verify payment method, failure code, billing address, retry state, and whether any charge was actually created. Do not treat this as a seat synchronization issue. 适用于订阅付款失败。"}
+  ],
+  "samples": [
+    {"id":"HYBRID-001","query":"Webhook 返回 403","gold_source":"kb://webhook/403","gold_section_path":"Webhook / HTTP 403","gold_chunk_index":0,"gold_chunk_ids":["c37fb6f70b504a7cdbe270802b02c338"]},
+    {"id":"HYBRID-002","query":"API 请求返回 500","gold_source":"kb://api/500","gold_section_path":"API / HTTP 500","gold_chunk_index":0,"gold_chunk_ids":["cc5a84abaf1fa1c91c1f972ad5e25e1e"]},
+    {"id":"HYBRID-003","query":"SSO 登录失败","gold_source":"kb://auth/sso","gold_section_path":"Authentication / SSO Login Failure","gold_chunk_index":0,"gold_chunk_ids":["0bebd5da4a387d9b00a8b178b9391b98"]},
+    {"id":"HYBRID-004","query":"OAuth token 无法刷新","gold_source":"kb://oauth/refresh","gold_section_path":"API Authentication / OAuth2 Refresh Token","gold_chunk_index":0,"gold_chunk_ids":["12c5b5ae785c6adc0f8b9ac5e3e5f563"]},
+    {"id":"HYBRID-005","query":"SDK 初始化报 E_SDK_INIT_42","gold_source":"kb://sdk/init","gold_section_path":"SDK / Initialization","gold_chunk_index":0,"gold_chunk_ids":["6399673ce56d1e053624ea79183e4f7f"]},
+    {"id":"HYBRID-006","query":"invoice 开票失败","gold_source":"kb://billing/invoice","gold_section_path":"Billing / Invoice","gold_chunk_index":0,"gold_chunk_ids":["56bf8022df8c729ae60de32a87432345"]},
+    {"id":"HYBRID-007","query":"refund 状态","gold_source":"kb://billing/refund","gold_section_path":"Billing / Refund Status","gold_chunk_index":0,"gold_chunk_ids":["d19b3928356263db93e9980f4711ba45"]},
+    {"id":"HYBRID-008","query":"duplicate charge","gold_source":"kb://billing/duplicate","gold_section_path":"Billing / Duplicate Charge","gold_chunk_index":0,"gold_chunk_ids":["eae7b9437a1daf38ca5cf31eb8d38c8f"]},
+    {"id":"HYBRID-009","query":"Workspace 邀请成员并分配 seat","gold_source":"kb://workspace/members","gold_section_path":"Workspace / Members and Seats","gold_chunk_index":0,"gold_chunk_ids":["c248d4570dfbbf118a8a109384cac620"]},
+    {"id":"HYBRID-010","query":"Organization 域名验证","gold_source":"kb://organization/domain","gold_section_path":"Organization / Domain Verification","gold_chunk_index":0,"gold_chunk_ids":["6d3e3673560a3986e9a316a008c85261"]},
+    {"id":"HYBRID-011","query":"订阅扣款成功但席位没有增加","gold_source":"kb://subscription/seat-sync","gold_section_path":"Subscription / Successful Payment but Missing Seats","gold_chunk_index":0,"gold_chunk_ids":["3b41d518d8191b0f4bc00655ab51e0da"]},
+    {"id":"HYBRID-012","query":"订阅付款失败","gold_source":"kb://subscription/payment-failed","gold_section_path":"Subscription / Payment Failed","gold_chunk_index":0,"gold_chunk_ids":["a4ac794e2dcefa180f18f75455545b13"]}
+  ]
+}
