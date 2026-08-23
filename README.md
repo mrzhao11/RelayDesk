@@ -83,7 +83,11 @@ EMBEDDING_MODEL=Qwen/Qwen3-Embedding-0.6B
 EMBEDDING_DEVICE=cpu
 EMBEDDING_QUERY_PROMPT=query
 EMBEDDING_QUERY_INSTRUCTION=Given an enterprise SaaS customer support request, retrieve the most relevant product documentation, account policy, billing rule, or troubleshooting passage that answers the request
-RAG_COLLECTION_NAME=knowledge_base_qwen3_embedding_0_6b
+RAG_COLLECTION_NAME=knowledge_base_qwen3_chunk_v2
+RAG_CHUNK_SIZE=500
+RAG_CHUNK_OVERLAP=80
+RAG_RRF_K=60
+RAG_RETRIEVAL_MODE=hybrid
 RAG_MIN_SCORE=0.48
 RAG_TIMEOUT_SECONDS=20
 CORS_ORIGINS=http://localhost,http://localhost:5173,http://127.0.0.1:5173
@@ -101,7 +105,7 @@ Embedding 与 LLM Provider 解耦：即使 LLM 使用 DeepSeek 兼容端点，In
 `LLM 70% + Embedding 20% + Pattern 10%` 三路融合，RAG 也使用同一个中文模型。
 首次运行会下载约 1.2 GB 模型。RAG 查询使用企业级 SaaS 客户支持专用英文 instruction，
 文档和 Intent 模板不添加检索 instruction。更换 `EMBEDDING_MODEL` 时必须同时更换
-`RAG_COLLECTION_NAME`，让知识库在新 collection 中重新导入，不能混用不同维度的向量。
+`RAG_COLLECTION_NAME`，让知识库在新 collection 中重新导入，不能混用不同维度或不同切片版本的向量。
 `RAG_MIN_SCORE=0.48` 是基于当前 22 条有答案、3 条无答案 SaaS 样本得到的保守起点，
 不是通用最优值；知识规模或模型变化后必须重新校准。
 
@@ -272,7 +276,7 @@ http://localhost/docs
 | `GET` | `/health` | 无 | 健康检查，返回服务状态和 Agent 统计 | 启动后确认服务可用 |
 | `POST` | `/chat` | JSON Body | 主对话接口，完成记忆读取、意图识别、Agent 路由、回复生成、记忆写入 | 业务主链路 |
 | `GET` | `/monitor` | 无 | 查看 Agent/工具统计、告警和优化建议 | 观察在线表现 |
-| `POST` | `/search` | Query 参数 | 执行知识库检索优化链路：查询改写、并行召回、合并去重、LLM 重排 | 测试 RAG 检索 |
+| `POST` | `/search` | Query 参数 | 执行可配置 Dense/Hybrid 检索；Rewrite 与 LLM Rerank 为可选阶段 | 测试 RAG 检索 |
 | `GET` | `/skills` | 无 | 查看当前加载的 Skills、匹配关键词和解析错误 | 确认动态能力是否生效 |
 | `POST` | `/skills/reload` | 管理密钥 Header | 运行时重新扫描 Skill 目录 | 修改业务规则后热加载 |
 | `POST` | `/knowledge/add` | 管理密钥 Header + JSON Body | 批量导入文档到 ChromaDB 知识库 | 程序化导入文档 |
@@ -391,7 +395,7 @@ curl http://localhost:8000/health
 
 ### 5.5 `/search`
 
-用途：测试内部知识库工具和 RAG 检索优化。RelayDesk 实现了内部工具注册与可靠性治理框架，目前接入 `knowledge_search`，并支持缓存、超时、熔断、fallback、查询改写和结果重排；当前不属于完整标准 MCP Server 实现。
+用途：测试内部知识库工具和 RAG 检索优化。RelayDesk 实现了内部工具注册与可靠性治理框架，目前接入 `knowledge_search`，默认使用 Qwen3 Dense + BM25 + RRF，并支持缓存、超时、熔断、fallback、可选查询改写和可选 LLM 重排；当前不属于完整标准 MCP Server 实现。
 
 Query 参数：
 
@@ -595,10 +599,10 @@ Primary Agent 只由三路融合后的最终 Intent 静态映射决定，Routing
 RelayDesk 的知识库由 `mcp/knowledge_base.py` 管理，底层使用 ChromaDB collection：
 
 ```text
-knowledge_base
+knowledge_base_qwen3_chunk_v2
 ```
 
-首次启动时，如果知识库为空，会导入约 20 篇虚构 SaaS 产品的通用客户支持知识。内容覆盖产品与 Workspace 使用、租户账号与技术、套餐订阅与费用结算；每篇都明确适用场景、处理步骤、人工升级条件，以及“真实账户状态必须通过 Tool 或人工核验”的边界。长文档继续按约 500 字切片。
+首次启动时，如果知识库为空，会导入约 20 篇虚构 SaaS 产品的通用客户支持知识。内容覆盖产品与 Workspace 使用、租户账号与技术、套餐订阅与费用结算；每篇都明确适用场景、处理步骤、人工升级条件，以及“真实账户状态必须通过 Tool 或人工核验”的边界。新 Chunker 依次使用 Markdown 标题、段落、自然句和最终 hard split，并在自然边界附近保留 overlap。
 
 ### 7.1 查看知识库统计
 
@@ -634,7 +638,7 @@ curl -X POST http://localhost:8000/knowledge/add \
   }'
 ```
 
-系统会把长文档切成 500 字左右的片段，并写入 ChromaDB。
+系统默认按约 500 字、80 字 overlap 生成稳定 chunk，并写入 ChromaDB；metadata 包含 `chunk_id/source/title/section_path/chunk_index/total_chunks`。同一批 chunk 还会构建进程内 BM25 索引。
 
 ### 7.3 上传文件导入知识库
 
@@ -684,18 +688,19 @@ curl -X POST "http://localhost:8000/search?query=退款需要多久到账&top_k=
       "chunk": 0
     }
   ],
-  "reranked": true
+  "reranked": false
 }
 ```
 
-`/search` 使用的是完整检索优化链路：
+`/search` 默认使用 `hybrid`，也可通过 `RAG_RETRIEVAL_MODE` 切换 `dense`、`dense_rewrite`、`hybrid_rewrite` 或 `hybrid_rewrite_rerank`：
 
 ```text
-原始查询
-  -> LLM 查询改写成多个角度
-  -> 多个子查询并行召回 ChromaDB
-  -> 合并去重
-  -> LLM 重排
+原始查询 + 可选 Rewrite Queries
+  -> Qwen3 Dense / ChromaDB
+  -> BM25 lexical retrieval
+  -> RRF 融合多个 Query 与 Retriever 排名
+  -> 按稳定 chunk_id 去重
+  -> 可选 LLM Rerank（失败回退 RRF 顺序）
   -> 返回 Top-K
 ```
 
@@ -705,7 +710,7 @@ RelayDesk 使用了三个 ChromaDB collection：
 
 | Collection | 模块 | 作用 |
 |------------|------|------|
-| `knowledge_base_qwen3_embedding_0_6b` | `mcp/knowledge_base.py` | 使用 Qwen3 Embedding 的 RAG 知识库文档片段 |
+| `knowledge_base_qwen3_chunk_v2` | `mcp/knowledge_base.py` | 使用 Qwen3 Embedding 与 section-aware chunk-v2 的 RAG 文档片段；BM25 索引由同批 chunk 在进程内构建 |
 | `episodic` | `memory/conversation_memory.py` | 压缩后的历史对话摘要 |
 | `user_profile` | `memory/conversation_memory.py` | 用户画像，包含偏好和关键实体 |
 
@@ -713,7 +718,7 @@ RelayDesk 使用了三个 ChromaDB collection：
 
 | 数据 | 写入时机 |
 |------|----------|
-| `knowledge_base` | 启动时自动导入默认文档，或调用 `/knowledge/add`、`/knowledge/upload` |
+| `knowledge_base_qwen3_chunk_v2` | 启动时自动导入默认文档，或调用 `/knowledge/add`、`/knowledge/upload` |
 | `episodic` | 当前会话工作记忆超过阈值后自动压缩并写入 |
 | `user_profile` | 每次 `/chat` 回复后异步提炼并更新 |
 

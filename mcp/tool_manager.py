@@ -4,10 +4,9 @@
 核心问题：工具调用出错（检索不全、召回不好）怎么优化？
 
 本模块的答案：
-  1. 查询改写（Query Rewriting）—— 用 LLM 把用户原始问题扩写成多个角度的子查询，
-     再合并去重，解决"召回不全"问题。
-  2. 结果重排（Reranking）—— 对召回结果用 LLM 打分，按相关性重新排序，
-     解决"召回不好/排序差"问题。
+  1. Retrieval Mode —— 在 Dense、Hybrid、Rewrite、Rerank 组合间显式切换。
+  2. 查询改写（Query Rewriting）—— 可选生成少量子查询，交给检索层统一融合。
+  3. 结果重排（Reranking）—— 仅作为 RRF 后有限候选池的可选 Precision Stage。
   3. 熔断器（Circuit Breaker）—— 连续失败超阈值时自动断开，防止雪崩。
   4. 结果缓存（TTL Cache）—— 相同参数直接返回缓存，减少重复调用。
   5. 降级策略（Fallback）—— 工具不可用时返回有意义的降级结果。
@@ -303,8 +302,15 @@ class MCPToolManager:
             raw = extract_text_content(resp.content)
             s, e = raw.find("["), raw.rfind("]") + 1
             queries = json.loads(raw[s:e])
-            # 原始查询也保留，去重
-            return list(dict.fromkeys([query] + queries))
+            if not isinstance(queries, list):
+                raise ValueError("查询改写结果不是数组")
+            cleaned = [
+                self._clean_text(item).strip()
+                for item in queries
+                if isinstance(item, str) and self._clean_text(item).strip()
+            ][:n]
+            # 原始查询始终保留；限制扩展数量并稳定去重。
+            return list(dict.fromkeys([query] + cleaned))
         except Exception as ex:
             logger.warning(f"查询改写失败，使用原始查询: {ex}")
             return [query]
@@ -315,39 +321,47 @@ class MCPToolManager:
         query: str,
         top_k: int = 5,
         context: Optional[Dict[str, Any]] = None,
+        retrieval_mode: str = "hybrid",
     ) -> ToolResult:
         """
-        完整的检索优化链路：查询改写 → 并行召回 → 去重 → 重排 → Top-K
-
-        这是解决"检索不全、召回不好"的完整方案。
+        可切换检索链路。KnowledgeBase 负责 Dense/BM25/RRF，本层仅负责
+        Optional Rewrite、有限候选池和 Optional LLM Rerank。
         """
-        # 1. 查询改写：生成多角度子查询
-        sub_queries = await self.rewrite_query(query, n=3)
-        logger.info(f"查询改写: {query!r} → {sub_queries}")
-
-        # 2. 并行召回：所有子查询同时检索
-        recall_k = max(top_k, 5)
-        tasks = [
-            self.call(tool_name, {"query": q, "top_k": recall_k}, context, use_cache=True)
-            for q in sub_queries
-        ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        # 3. 合并去重（按内容哈希去重）
-        seen, merged = set(), []
-        for r in results:
-            if isinstance(r, ToolResult) and r.success and isinstance(r.data, list):
-                for item in r.data:
-                    key = hashlib.md5(str(item).encode()).hexdigest()
-                    if key not in seen:
-                        seen.add(key)
-                        merged.append(item)
-
-        if not merged:
-            return ToolResult(success=False, data=[], tool_name=tool_name, error="所有子查询均无结果")
-
-        # 4. 重排：用 LLM 对合并结果按相关性打分，取 Top-K
-        reranked = await self._rerank(query, merged, top_k)
+        modes = {
+            "dense": (False, False, False),
+            "hybrid": (True, False, False),
+            "dense_rewrite": (False, True, False),
+            "hybrid_rewrite": (True, True, False),
+            "hybrid_rewrite_rerank": (True, True, True),
+        }
+        if retrieval_mode not in modes:
+            return ToolResult(
+                success=False,
+                data=[],
+                tool_name=tool_name,
+                error=f"不支持的 retrieval mode: {retrieval_mode}",
+            )
+        use_bm25, use_rewrite, use_rerank = modes[retrieval_mode]
+        sub_queries = await self.rewrite_query(query, n=3) if use_rewrite else [query]
+        candidate_pool = min(15, max(top_k, 10))
+        params: Dict[str, Any] = {
+            "query": query,
+            "top_k": candidate_pool,
+            "mode": "hybrid" if use_bm25 else "dense",
+            "candidate_k": candidate_pool,
+        }
+        if use_rewrite:
+            params["queries"] = sub_queries
+        logger.info("RAG mode=%s queries=%s", retrieval_mode, sub_queries)
+        result = await self.call(tool_name, params, context, use_cache=True)
+        if not result.success or not isinstance(result.data, list):
+            return result
+        candidates = result.data
+        if not candidates:
+            return ToolResult(success=False, data=[], tool_name=tool_name, error="检索无结果")
+        if not use_rerank:
+            return ToolResult(success=True, data=candidates[:top_k], tool_name=tool_name)
+        reranked = await self._rerank(query, candidates, top_k)
         return ToolResult(success=True, data=reranked, tool_name=tool_name, reranked=True)
 
     # ── 结果重排（解决召回不好）──────────────────────────────────────────────

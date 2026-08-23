@@ -77,6 +77,15 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _rag_collection_name() -> str:
+    """Never mix legacy sentence chunks with section-aware chunk-v2 vectors."""
+    configured = os.getenv("RAG_COLLECTION_NAME", "knowledge_base_qwen3_chunk_v2").strip()
+    if configured in {"knowledge_base", "knowledge_base_qwen3_embedding_0_6b"}:
+        logger.warning("旧 RAG collection %s 已自动迁移到 chunk-v2 collection", configured)
+        return "knowledge_base_qwen3_chunk_v2"
+    return configured or "knowledge_base_qwen3_chunk_v2"
+
+
 def _build_embedding_function():
     """构造 Intent 与 RAG 共用的本地多语言 Embedding。"""
     from core.embedding_provider import LocalSentenceTransformerEmbedding
@@ -179,7 +188,7 @@ async def lifespan(app: FastAPI):
         chroma_path=os.getenv("CHROMA_PERSIST_DIRECTORY", "/app/data/chroma"),
         embedding_function=embedding_function,
         embedding_model=embedding_model,
-        collection_name=os.getenv("RAG_COLLECTION_NAME", "knowledge_base_qwen3_embedding_0_6b"),
+        collection_name=_rag_collection_name(),
     )
     logger.info(f"知识库已加载: {await kb.doc_count_async()} 个文档片段")
 
@@ -195,13 +204,16 @@ async def lifespan(app: FastAPI):
 
     _tool_manager.register(Tool(
         name="knowledge_search",
-        description="搜索知识库（基于 ChromaDB 向量检索）",
+        description="搜索知识库（Qwen3 Dense + BM25 + RRF Hybrid Retrieval）",
         handler=kb.search_handler,
         schema={
             "type": "object",
             "properties": {
                 "query": {"type": "string"},
                 "top_k": {"type": "integer"},
+                "mode": {"type": "string"},
+                "queries": {"type": "array"},
+                "candidate_k": {"type": "integer"},
             },
             "required": ["query"],
         },
@@ -415,7 +427,12 @@ async def _build_knowledge_context(message: str, intent=None, top_k: int = 3) ->
     try:
         timeout_s = max(1.0, float(os.getenv("RAG_TIMEOUT_SECONDS", "20")))
         result = await asyncio.wait_for(
-            _tool_manager.search_with_rewrite("knowledge_search", message, top_k=top_k),
+            _tool_manager.search_with_rewrite(
+                "knowledge_search",
+                message,
+                top_k=top_k,
+                retrieval_mode=os.getenv("RAG_RETRIEVAL_MODE", "hybrid"),
+            ),
             timeout=timeout_s,
         )
         if not result.success or not isinstance(result.data, list) or not result.data:
@@ -436,12 +453,17 @@ async def _build_knowledge_context(message: str, intent=None, top_k: int = 3) ->
                 score = float(item.get("score"))
             except (TypeError, ValueError):
                 continue
-            if score < min_score:
+            # RRF 与 cosine 不同量纲。Dense-only 继续使用已校准阈值；Hybrid
+            # 只校验是否存在有效检索器排名证据，避免把 RRF 小分数误判为未命中。
+            is_hybrid = "rrf_score" in item
+            has_hybrid_evidence = bool(item.get("dense_rank") or item.get("bm25_rank"))
+            if (not is_hybrid and score < min_score) or (is_hybrid and not has_hybrid_evidence):
                 continue
             if not content:
                 continue
             used = True
-            parts.append(f"{i}. 标题: {title}\n   相关度: {score}\n   内容: {content[:600]}")
+            relevance = item.get("rrf_score") if is_hybrid else score
+            parts.append(f"{i}. 标题: {title}\n   检索相关度: {relevance}\n   内容: {content[:600]}")
 
         if not used:
             return "", False
@@ -499,7 +521,12 @@ async def search(query: str, top_k: int = 5):
     """
     if _tool_manager is None:
         raise HTTPException(503, "服务未就绪")
-    result = await _tool_manager.search_with_rewrite("knowledge_search", query, top_k=top_k)
+    result = await _tool_manager.search_with_rewrite(
+        "knowledge_search",
+        query,
+        top_k=top_k,
+        retrieval_mode=os.getenv("RAG_RETRIEVAL_MODE", "hybrid"),
+    )
     return {"query": query, "results": result.data, "reranked": result.reranked}
 
 
