@@ -13,7 +13,7 @@ from agents.agent_orchestrator import (
     Request,
     RoutingDecision,
 )
-from core.intent_recognizer import IntentCategory, UrgencyLevel
+from core.intent_recognizer import IntentCategory, IntentRecognizer, UrgencyLevel
 
 
 class RoutingTests(unittest.TestCase):
@@ -115,11 +115,12 @@ class RoutingTests(unittest.TestCase):
             user_id="u1",
             conv_id="c1",
             intent=IntentCategory.TECHNICAL_LOGIN,
+            secondary_intents=[IntentCategory.PAYMENT_ISSUE],
         )
         decision = self._orchestrator()._route_decision(request)
         self.assertEqual(decision.primary_agent, AgentType.TECHNICAL)
         self.assertEqual(decision.supporting_agents, [AgentType.BILLING])
-        self.assertIn("supporting=billing because keyword=重复扣款", decision.reason)
+        self.assertIn("supporting=billing from secondary_intent=payment_issue", decision.reason)
 
     def test_billing_primary_adds_technical_for_500(self):
         request = Request(
@@ -127,11 +128,12 @@ class RoutingTests(unittest.TestCase):
             user_id="u1",
             conv_id="c1",
             intent=IntentCategory.PAYMENT_ISSUE,
+            secondary_intents=[IntentCategory.TECHNICAL_CRASH],
         )
         decision = self._orchestrator()._route_decision(request)
         self.assertEqual(decision.primary_agent, AgentType.BILLING)
         self.assertEqual(decision.supporting_agents, [AgentType.TECHNICAL])
-        self.assertIn("supporting=technical because keyword=500", decision.reason)
+        self.assertIn("supporting=technical from secondary_intent=technical_crash", decision.reason)
 
     def test_broad_plan_word_does_not_trigger_billing_supporting(self):
         request = Request(
@@ -144,44 +146,64 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(decision.primary_agent, AgentType.GENERAL)
         self.assertEqual(decision.supporting_agents, [])
 
-    def test_error_code_entity_triggers_technical_supporting(self):
+    def test_same_agent_secondary_does_not_trigger_supporting(self):
         request = Request(
-            message="付款之后接口不能使用",
-            user_id="u1",
-            conv_id="c1",
-            intent=IntentCategory.PAYMENT_ISSUE,
-            entities={"error_code": ["E_AUTH"]},
-        )
-        decision = self._orchestrator()._route_decision(request)
-        self.assertEqual(decision.primary_agent, AgentType.BILLING)
-        self.assertEqual(decision.supporting_agents, [AgentType.TECHNICAL])
-        self.assertIn("entity=error_code", decision.reason)
-
-    def test_amount_entity_triggers_billing_supporting(self):
-        request = Request(
-            message="登录后页面状态异常",
+            message="登录失败后页面也崩溃",
             user_id="u1",
             conv_id="c1",
             intent=IntentCategory.TECHNICAL_LOGIN,
-            entities={"amount": ["￥99"]},
+            secondary_intents=[IntentCategory.TECHNICAL_CRASH],
         )
         decision = self._orchestrator()._route_decision(request)
         self.assertEqual(decision.primary_agent, AgentType.TECHNICAL)
-        self.assertEqual(decision.supporting_agents, [AgentType.BILLING])
-        self.assertIn("entity=amount", decision.reason)
+        self.assertEqual(decision.supporting_agents, [])
 
-    def test_supporting_agent_is_deduplicated_across_evidence(self):
+    def test_entities_are_context_only_and_do_not_trigger_supporting(self):
         request = Request(
-            message="登录失败并返回500 error，客户端随后崩溃",
+            message="登录报401，涉及99元",
             user_id="u1",
             conv_id="c1",
-            intent=IntentCategory.BILLING,
-            entities={"error_code": ["500"]},
+            intent=IntentCategory.TECHNICAL_LOGIN,
+            entities={"amount": ["99元"], "error_code": ["401"]},
         )
         decision = self._orchestrator()._route_decision(request)
-        self.assertEqual(decision.supporting_agents, [AgentType.TECHNICAL])
-        self.assertIn("keyword=500", decision.reason)
-        self.assertIn("entity=error_code", decision.reason)
+        self.assertEqual(decision.primary_agent, AgentType.TECHNICAL)
+        self.assertEqual(decision.supporting_agents, [])
+
+    def test_supporting_agent_is_deduplicated_after_intent_mapping(self):
+        request = Request(
+            message="登录报401，而且还要处理扣款和发票",
+            user_id="u1",
+            conv_id="c1",
+            intent=IntentCategory.TECHNICAL_LOGIN,
+            secondary_intents=[IntentCategory.PAYMENT_ISSUE, IntentCategory.INVOICE],
+        )
+        decision = self._orchestrator()._route_decision(request)
+        self.assertEqual(decision.supporting_agents, [AgentType.BILLING])
+        self.assertIn("secondary_intent=payment_issue,invoice", decision.reason)
+
+    def test_invalid_general_and_escalation_secondaries_are_filtered(self):
+        request = Request(
+            message="登录报401",
+            user_id="u1",
+            conv_id="c1",
+            intent=IntentCategory.TECHNICAL_LOGIN,
+            secondary_intents=[
+                IntentCategory.QUERY,
+                IntentCategory.HUMAN_HANDOFF,
+                "invalid",  # type: ignore[list-item]
+                None,  # type: ignore[list-item]
+            ],
+        )
+        decision = self._orchestrator()._route_decision(request)
+        self.assertEqual(decision.supporting_agents, [])
+
+    def test_regex_entity_extraction_is_retained(self):
+        recognizer = IntentRecognizer(api_key="test", base_url="http://localhost")
+        entities = recognizer._extract_entities("订单号 RD-1234，金额199元，登录报401")
+        self.assertEqual(entities["order_id"], ["RD-1234"])
+        self.assertEqual(entities["amount"], ["199元"])
+        self.assertEqual(entities["error_code"], ["401"])
 
     def test_escalation_and_critical_routing_are_unchanged(self):
         escalation = Request(
@@ -205,6 +227,60 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(critical_decision.primary_agent, AgentType.ESCALATION)
         self.assertEqual(escalation_decision.supporting_agents, [])
         self.assertEqual(critical_decision.supporting_agents, [])
+
+
+class IntentLlmParsingTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _recognizer_with_response(raw: str) -> IntentRecognizer:
+        class FakeMessages:
+            async def create(self, **_kwargs):
+                return SimpleNamespace(content=[SimpleNamespace(type="text", text=raw)])
+
+        recognizer = IntentRecognizer(api_key="test", base_url="http://localhost")
+        recognizer.client = SimpleNamespace(messages=FakeMessages())
+        return recognizer
+
+    async def test_valid_primary_and_secondary_are_parsed(self):
+        recognizer = self._recognizer_with_response(
+            '{"primary_intent":"technical_login","secondary_intents":["payment_issue"],'
+            '"confidence":0.93,"reasoning":"两个独立诉求"}'
+        )
+        result = await recognizer._llm_recognize("登录报401而且重复扣款", None)
+        self.assertEqual(result["intent"], IntentCategory.TECHNICAL_LOGIN)
+        self.assertEqual(result["secondary_intents"], [IntentCategory.PAYMENT_ISSUE])
+
+    async def test_empty_secondary_is_preserved(self):
+        recognizer = self._recognizer_with_response(
+            '{"primary_intent":"refund","secondary_intents":[],"confidence":0.9}'
+        )
+        result = await recognizer._llm_recognize("我要退款", None)
+        self.assertEqual(result["secondary_intents"], [])
+
+    async def test_invalid_duplicate_and_primary_secondary_are_filtered(self):
+        recognizer = self._recognizer_with_response(
+            '{"primary_intent":"technical_login","secondary_intents":'
+            '["technical_login","payment_issue","invalid","payment_issue","invoice","refund"]}'
+        )
+        result = await recognizer._llm_recognize("复合请求", None)
+        self.assertEqual(
+            result["secondary_intents"],
+            [IntentCategory.PAYMENT_ISSUE, IntentCategory.INVOICE],
+        )
+
+    async def test_invalid_primary_uses_other_while_valid_secondary_remains_parseable(self):
+        recognizer = self._recognizer_with_response(
+            '{"primary_intent":"invalid","secondary_intents":["invoice"]}'
+        )
+        result = await recognizer._llm_recognize("未知请求", None)
+        self.assertEqual(result["intent"], IntentCategory.OTHER)
+        self.assertEqual(result["secondary_intents"], [IntentCategory.INVOICE])
+
+    async def test_malformed_json_uses_existing_failure_fallback(self):
+        recognizer = self._recognizer_with_response("not-json")
+        result = await recognizer._llm_recognize("登录报401", None)
+        self.assertTrue(result["failed"])
+        self.assertEqual(result["intent"], IntentCategory.OTHER)
+        self.assertEqual(result["secondary_intents"], [])
 
 
 class KnowledgeContextTests(unittest.IsolatedAsyncioTestCase):

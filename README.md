@@ -588,7 +588,7 @@ curl -X POST http://localhost:8000/chat \
 
 这类问题会触发多 Agent 并行协作，由技术 Agent 和账单 Agent 分别处理后合并回复。
 
-Primary Agent 只由最终 Intent 的静态映射决定，Routing 层不再重复计算领域分数。Supporting Agent 仅在 Technical 与 Billing 之间检查集中维护的强证据，例如 `401/403/500`、登录失败、重复扣款、支付失败、发票，以及 `error_code`、`amount` 实体；`套餐`、`帮助`、`问题`等宽泛词不会触发协作。路由原因会记录具体依据，`routing_confidence` 直接沿用 Intent 置信度，不表示重新计算的路由概率。
+Primary Agent 只由三路融合后的最终 Intent 静态映射决定，Routing 层不再重复计算领域分数。同一次 LLM Intent 调用还可返回最多两个真正独立的 `secondary_intents`，Supporting Agent 由这些 Secondary Intents 映射产生，不增加第二次 LLM Router 调用。Embedding 与 Pattern 继续只辅助 Primary；LLM 失败时 Secondary 为空，系统退化为单 Agent。Entity 只保留给 Agent context、Tool 参数和调试，不再决定 Supporting。路由原因会记录具体 Secondary Intent，`routing_confidence` 直接沿用 Primary Intent 置信度，不表示整个 Multi-Agent 路由的校准概率。
 
 ## 7. 知识库使用
 

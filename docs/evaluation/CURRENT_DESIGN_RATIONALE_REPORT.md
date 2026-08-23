@@ -8,13 +8,13 @@
 
 ## SaaS 场景复测摘要（2026-08-23）
 
-当前业务口径已从内部员工服务入口收敛为：**面向外部企业客户的企业级 SaaS 统一客户服务平台**。Agent、Intent 枚举、API、Tool、Memory 和路由架构均未改变；Skills、20 篇默认知识、前端文案、默认 Evaluation 与 25 条 RAG 数据已换成租户、Workspace/Organization、SSO、API Token、Webhook/SDK、套餐/席位/订阅语境。
+当前业务口径已从内部员工服务入口收敛为：**面向外部企业客户的企业级 SaaS 统一客户服务平台**。Agent、Intent 枚举、对外 API 字段、Tool 和 Memory 均未改变；Supporting 路由已从关键词/Entity 规则收敛为复用同一次 LLM Intent 调用的 Secondary Intents。Skills、20 篇默认知识、前端文案、默认 Evaluation 与 25 条 RAG 数据已换成租户、Workspace/Organization、SSO、API Token、Webhook/SDK、套餐/席位/订阅语境。
 
 真实加载 `Qwen/Qwen3-Embedding-0.6B` 后重新编码当前 20 篇 SaaS 知识并运行 25 条检索：22 条有答案样本的 Recall@1/3/5 为 `0.7727/0.9545/1.0000`，MRR 为 `0.8879`，P50/P95 为 `180.841/242.649ms`。相对重建的旧默认模型结果，22 条有答案查询全部改善，3 条无答案查询排名状态不变，没有正例退步。
 
 本轮仍暴露两个真实 Bad Case：`RAG-013` 的“扣款但套餐未开通”只排第 3，`RAG-019` 的“多次未解决且影响整个租户”只排第 5；它们虽然进入 Top-5，但 Top-1 仍会选到相邻文档。3 条无答案查询的最高分为 `0.4209/0.4787/0.4523`，当前正例目标文档最低分为 `0.4927`，因此默认 `RAG_MIN_SCORE` 从 `0.45` 微调为 `0.48`。这个阈值只在小型同域样本上形成初始分界，不能视为生产环境充分校准。
 
-代码回归通过 `12/12`；系统默认 Python 因缺少 `anthropic` 依赖无法收集测试，改用隔离项目环境后全部通过。以下 Rewrite/Rerank、Judge、路由、Skills 与 Tool 数据仍是上一轮设计理由实验；其中旧模型的坏案例保留为历史诊断，不能与本轮 SaaS 语料的 Qwen3 数字混作同一次严格模型对照。
+本次完整代码回归通过 `28/28`，并完成 Python 核心文件语法检查；其中新增覆盖 Secondary Intent JSON 容错、去重/过滤、Entity 不参与 Supporting、路由映射与升级兼容。以下 Rewrite/Rerank、Judge、Skills 与 Tool 数据仍是上一轮设计理由实验；其中旧模型的坏案例保留为历史诊断，不能与本轮 SaaS 语料的 Qwen3 数字混作同一次严格模型对照。
 
 ## 最前面直接回答十个问题
 
@@ -44,15 +44,15 @@ Qwen3 Direct 的 MRR 已达到 `0.8879`，所以 Rerank 的边际空间明显缩
 
 ### Q4. 相比 Single General Agent，Multi-Agent 到底解决了什么问题？
 
-在 12 条固定 gold intent 的确定性路由基准上，Single General 的必要角色关注点覆盖率为 `0.1667`，Current Primary + Supporting 为 `1.0000`，角色集合完全匹配率也从 `0.1667` 到 `1.0000`。这说明当前结构确实解决了“请求应交给哪个专业角色、复合请求是否覆盖两个专业角色”的问题。
+在 15 条注入 gold primary/secondary intents 的确定性路由基准上，Single General 的必要角色关注点覆盖率为 `0.1333`，Current Primary + Supporting 为 `1.0000`，角色集合完全匹配率也从 `0.1333` 到 `1.0000`。这说明当前映射结构能解决“已识别的请求应交给哪个专业角色、已识别的复合请求是否覆盖两个专业角色”的问题。
 
 但回答内容没有执行，因此不能把角色覆盖率解释成 Correctness、Completeness 或用户体验提升。
 
 ### Q5. 相比 Primary-Agent Only，Supporting Agent 什么时候真正有价值？
 
-在本数据集的 5 条双领域样本中，Supporting Agent 补上了 Primary-only 缺失的第二专业角色，包括 401 + 重复扣款、500 + 重复支付、订阅 + 崩溃、账户安全 + 陌生扣款、发票 + 500。整体关注点角色覆盖率从 Primary-only 的 `0.7917` 提升到 Current 的 `1.0000`。
+在本数据集的 7 条双领域样本中，Supporting Agent 补上了 Primary-only 缺失的第二专业角色，包括显式的 401 + 重复扣款、500 + 重复支付，也包括“续费成功但无法登录”“已付费但功能未开通”等隐式组合。整体关注点角色覆盖率从 Primary-only 的 `0.7667` 提升到 Current 的 `1.0000`。
 
-对单领域问题，Primary-only 已覆盖必要角色；此时 Supporting Agent 没有结构收益，不应无条件启用。当前实现由最终 Intent 直接映射 Primary，只在 Technical 与 Billing 之间用集中维护的强关键词或强 Entity 检查第二领域，不再使用 Domain Score、Supporting 分数阈值或 Primary 比例阈值。
+对单领域问题，Primary-only 已覆盖必要角色；此时 Supporting Agent 没有结构收益，不应无条件启用。当前实现由最终 Intent 直接映射 Primary，并复用同一次 LLM Intent 请求返回的 Secondary Intents 映射 Technical/Billing Supporting，不再使用 Domain Score、强关键词/Entity、Supporting 分数阈值或 Primary 比例阈值。LLM 失败时 Secondary 为空，安全退化为单 Agent。
 
 ### Q6. 相比直接拼历史聊天，分层 Memory 为什么值得存在？
 
@@ -77,14 +77,14 @@ Qwen3 Direct 的 MRR 已达到 `0.8879`，所以 Rerank 的边际空间明显缩
 
 本轮支持的是**机制**，不是正式参数最优性：按需 Skills 能减少 prompt；Primary + Supporting 能覆盖复合领域；Cache/Timeout/Breaker/Fallback 状态机按预期工作。
 
-以下仍主要是经验配置：Intent 的 70/20/10、置信度阈值 0.5、Supporting 强证据词表、Top-K、20 秒 RAG timeout、Tool 30 秒 timeout、熔断 5 次/60 秒、Memory 15 条压缩/保留 5 条/24h TTL。路由不再使用 Supporting 分数阈值；Qwen3 的 `RAG_MIN_SCORE=0.48` 仅由当前 22 条正例和 3 条负例给出一个保守起点，不是充分校准的最优值。
+以下仍主要是经验配置：Intent 的 70/20/10、置信度阈值 0.5、LLM Secondary Intent 的提示词与最多 2 个限制、Top-K、20 秒 RAG timeout、Tool 30 秒 timeout、熔断 5 次/60 秒、Memory 15 条压缩/保留 5 条/24h TTL。路由不再使用 Supporting 分数阈值；Qwen3 的 `RAG_MIN_SCORE=0.48` 仅由当前 22 条正例和 3 条负例给出一个保守起点，不是充分校准的最优值。
 
 ### Q10. “为什么要这样设计？”当前测试能给出哪些真实、可复现的证据？
 
 可以说：
 
 1. 将旧默认 Embedding 替换为 Qwen3，并将知识和查询统一到 SaaS 语境后，Direct Recall@5 从重建基线的 `0.5227` 提升到 `1.0000`，MRR 从 `0.2303` 提升到 `0.8879`；22 条有答案样本全部改善，3 条无答案样本排名状态不变。
-2. Current 路由在手工标注的 12 条角色覆盖数据上达到 `1.0000`，而 General-only 为 `0.1667`、Primary-only 为 `0.7917`。
+2. Current 路由映射在 15 条注入 gold intents 的角色覆盖数据上达到 `1.0000`，而 General-only 为 `0.1333`、Primary-only 为 `0.7667`；这不等同于 LLM 多意图识别准确率。
 3. Dynamic Skills 将平均 prompt 字符减少 `65.11%`，同时保持必要 Skill 覆盖。
 4. Tool 治理在缓存、超时、异常、连续故障和恢复注入下均表现出预期保护行为。
 
@@ -330,11 +330,11 @@ LLM 运行细节也必须同时披露：Rewrite 6/6 正常结束且没有空文�
 
 | 版本 | 关注点角色覆盖率 | 角色集合完全匹配率 | 平均多余角色数 |
 |---|---:|---:|---:|
-| Single General | 0.1667 | 0.1667 | 0.8333 |
-| Primary Only | 0.7917 | 0.5833 | 0.0000 |
+| Single General | 0.1333 | 0.1333 | 0.8667 |
+| Primary Only | 0.7667 | 0.5333 | 0.0000 |
 | Current Primary + Supporting | 1.0000 | 1.0000 | 0.0000 |
 
-Current 在 12 条路由样本中覆盖全部标注角色。Primary-only 的缺口集中于 5 条双领域请求，说明 Supporting 不是为了所有请求，而是为了复合请求的第二关注点。
+Current 在 15 条路由样本中覆盖全部标注角色，7 条 gold 复合请求的 Multi-Agent 触发 Precision/Recall/F1 均为 `1.0000`。但该基准直接注入 gold primary/secondary intents，只验证映射与过滤逻辑；Primary Intent Accuracy、Secondary Intent Precision/Recall/F1 均为 `NOT EXECUTED`，不能把映射结果包装成语义识别效果。
 
 ### 8.2 回答质量与延迟
 
@@ -414,12 +414,12 @@ Judge 的正确定位是自动化回归信号，不是绝对 ground truth。恢�
 
 ## 13. Design Motivation Bad Case Catalog
 
-自动汇总文件保存 29 条机制对照观察；报告另外保留 10 条 Direct Top-5 漏召回诊断：
+自动汇总文件保存 34 条机制对照观察；报告另外保留 10 条 Direct Top-5 漏召回诊断：
 
 | Feature | 数量 | 证据含义 |
 |---|---:|---|
 | Intent Fusion | 1 | Current 相对 LLM-only 的真实退化案例 |
-| Primary / Supporting 路由 | 15 | 两个基线在若干样本漏角色，而 Current 覆盖；同一请求可能对应两个基线案例 |
+| Primary / Supporting 路由 | 20 | 两个基线在若干样本漏角色，而 Current 覆盖；同一请求可能对应两个基线案例 |
 | Dynamic Skills | 5 | 全量注入有 2 个无关 Skill，Current 为 0 |
 | LLM-as-Judge | 3 | 每组受控答案都未完成完整重复覆盖 |
 | Cache | 1 | 重复 handler 调用减少 |
@@ -448,9 +448,9 @@ Judge 的正确定位是自动化回归信号，不是绝对 ground truth。恢�
 
 对这 10 个案例，后续补测必须保存：rewrite queries、去重前后候选、gold 在 rewrite 前后的 rank、rerank 前后 rank、延迟和 LLM calls。只有 gold 从 Direct Top-5 外进入 rewrite Top-5，才能写成“Query Rewrite 修复”；只有 gold 已在候选中且 rank 上升，才能写成“Rerank 改善排序”。
 
-### 13.2 Primary / Supporting Routing：15 个基线缺口
+### 13.2 Primary / Supporting Routing：20 个基线缺口
 
-这 15 条来自 10 个请求；同一个复合请求可能同时形成一条 General-only 缺口和一条 Primary-only 缺口。
+这 20 条来自 13 个未被 General-only 覆盖的请求；7 个复合请求还会各形成一条 Primary-only 缺口。
 
 | Bad Case | 输入 | 必要角色 | 失败基线及其角色 | Current 角色 | 解释 |
 |---|---|---|---|---|---|
@@ -469,6 +469,11 @@ Judge 的正确定位是自动化回归信号，不是绝对 ground truth。恢�
 | BC-ROUTE-013 | 账号疑似被盗且有陌生扣款 | technical + billing | Primary-only → technical | technical + billing | technical 负责安全处置，billing 补充陌生扣款核验 |
 | BC-ROUTE-014 | 先讲开票流程，再讲 500 信息收集 | billing + technical | General-only → general | billing + technical | 两个明确诉求分属不同专业角色 |
 | BC-ROUTE-015 | 先讲开票流程，再讲 500 信息收集 | billing + technical | Primary-only → billing | billing + technical | Primary-only 只覆盖开票，漏掉 500 排查 |
+| BC-ROUTE-016 | 续费成功但账号仍无法登录 | billing + technical | General-only → general | billing + technical | 隐式费用状态与登录故障需要分别处理 |
+| BC-ROUTE-017 | 续费成功但账号仍无法登录 | billing + technical | Primary-only → billing | billing + technical | Primary-only 漏掉登录排查 |
+| BC-ROUTE-018 | 已付费但高级功能未开通 | billing + technical | General-only → general | billing + technical | 付款核验与功能开通故障属于两个专业方向 |
+| BC-ROUTE-019 | 已付费但高级功能未开通 | billing + technical | Primary-only → billing | billing + technical | Primary-only 漏掉功能异常排查 |
+| BC-ROUTE-020 | 账单正常但 SSO 认证失败 | technical | General-only → general | technical | “账单正常”不应误触发 Billing，主诉是认证故障 |
 
 这些案例能证明的是“路由角色集合更完整”。它们不能证明最终答案更完整，因为 Agent 回答和 synthesis 没有执行。后续需要逐条检查 Supporting 是否产生冲突、Primary synthesis 是否遗漏专业信息，以及单领域请求是否因为误加 Supporting 增加无收益成本。
 
@@ -524,12 +529,12 @@ Judge 的正确定位是自动化回归信号，不是绝对 ground truth。恢�
 2. Qwen3 Direct：当前 SaaS 语料 Recall@5 1.0000、MRR 0.8879，证明先选对基础向量模型比增加 LLM 链路更重要。
 3. + Rewrite：旧基线正式参数下 24/25 次回退；扩容虽有案例收益，但 P95 约 15.56 秒。
 4. + Rerank：旧基线兼容诊断出现 1 条排序改善，但大量请求在 30 秒超时后回退；Qwen3 后优先级下降。
-5. + score/fallback filter：防止“有返回即命中”；Qwen3 的新初始阈值为 0.45，仍需更多负例校准。
+5. + score/fallback filter：防止“有返回即命中”；Qwen3 的新初始阈值为 0.48，仍需更多负例校准。
 
 ### Agent
 
-1. General-only：简单，但角色覆盖只有 0.1667。
-2. Primary-only：单领域足够，整体覆盖 0.7917。
+1. General-only：简单，但角色覆盖只有 0.1333。
+2. Primary-only：单领域足够，整体覆盖 0.7667。
 3. Primary + Supporting：复合场景角色覆盖 1.0。
 4. Synthesis：设计上消解拼接与主次问题；效果未执行。
 
@@ -575,11 +580,11 @@ Judge 的正确定位是自动化回归信号，不是绝对 ground truth。恢�
 
 ### 17.2 Primary + Supporting 的角色覆盖收益
 
-- General-only：0.1667。
-- Primary-only：0.7917。
+- General-only：0.1333。
+- Primary-only：0.7667。
 - Current：1.0000。
 
-证据范围：固定 gold intent 下的角色集合，不含回答质量。
+证据范围：固定 gold primary/secondary intents 下的角色集合，不含语义识别与回答质量。
 
 ### 17.3 Tool 生命周期治理
 
@@ -608,7 +613,7 @@ Cache、Timeout、Fallback、Breaker 和 Recovery 均通过 Fake Tool 故障注�
 | Query Rewrite | 正式参数无增益；兼容诊断有增益 | 24/25 回退；扩容后 6 条困难样本有 3 条进入 Top-5，但延迟不可接受 |
 | Rerank | 正式参数无增益；兼容诊断有单例增益 | 正式参数 25/25 截断；扩容后有 1 条升至第 1，但 30 秒超时频繁 |
 | RAG score 0.48 / Top-K | 初始小样本支持 | 仅 3 条无答案负例，没有充分 precision-recall/拒答曲线 |
-| Supporting 强证据词表 | 12 条确定性路由样本完全匹配 | 数据集与规则同源，隐式复合表达可能漏召回 |
+| LLM Secondary Intents | 解析、去重、过滤和 15 条确定性映射测试通过 | 当前未执行端到端语义识别基准，隐式复合表达效果未知 |
 | Multi-Agent Synthesis | 未证明 | 回答/Judge 未执行 |
 | Memory 15/5/24h | 未证明 | 没有长对话保留率 |
 | Tool 30s / 5 failures / 60s | 机制通过、参数未优化 | 故障注入使用缩短时间 |
@@ -638,7 +643,7 @@ Single General；或只执行当前 Primary。
 
 #### Design Choice
 
-Primary 直接由最终 Intent 映射；仅在 Technical 与 Billing 之间，以高精度强证据触发 Supporting。
+Primary 直接由三路融合后的最终 Intent 映射；同一次 LLM Intent 调用返回真正独立的 Secondary Intents，再映射 Technical/Billing Supporting，不额外增加 Router 调用。
 
 #### Why
 
@@ -646,7 +651,7 @@ Primary 直接由最终 Intent 映射；仅在 Technical 与 Billing 之间，�
 
 #### Result
 
-12 条角色基准：General 0.1667、Primary-only 0.7917、Current 1.0000。
+15 条 gold 注入映射基准：General 0.1333、Primary-only 0.7667、Current 1.0000；语义多意图识别指标未执行。
 
 #### Trade-off
 
@@ -654,7 +659,7 @@ Primary 直接由最终 Intent 映射；仅在 Technical 与 Billing 之间，�
 
 #### 面试可能追问
 
-“gold 怎么标？”“为什么这些词算强证据？”“Supporting 冲突怎么办？”回答时应说明规则以高 Precision 为目标，当前只有小样本角色覆盖证据，隐式复合表达可能被漏掉。
+“gold 怎么标？”“Secondary 为什么可信？”“Supporting 冲突怎么办？”回答时应说明当前只有解析与 gold 注入映射证据，LLM 多意图识别尚未形成可宣称的准确率；非法、重复、同 Agent、General 和升级类 Secondary 会被安全过滤。
 
 ### Story B：为什么动态加载 Skills
 
@@ -766,7 +771,7 @@ Original Query → ChromaDB Top-K。
 
 可以直接讨论：
 
-- 路由关注点角色覆盖率：0.1667 / 0.7917 / 1.0000。
+- 路由关注点角色覆盖率：0.1333 / 0.7667 / 1.0000（gold intents 注入的映射结果）。
 - Dynamic Skills 平均 prompt 字符减少率：65.11%。
 - Direct RAG：Recall@1 0.0909、Recall@3 0.3636、Recall@5 0.5227、MRR 0.2303、P95 155.128ms。
 - Qwen3 Direct RAG（当前 SaaS 语料）：Recall@1 0.7727、Recall@3 0.9545、Recall@5 1.0000、MRR 0.8879；22 条有答案查询改善、0 条正例退步，3 条无答案排名状态不变。

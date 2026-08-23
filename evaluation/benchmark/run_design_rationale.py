@@ -779,12 +779,16 @@ async def routing_benchmark(output_dir: Path, llm_probe: Dict[str, Any]) -> List
     dataset = load_json(DATA_DIR / "multi_agent_design_rationale.json")["samples"]
     rows: List[Dict[str, Any]] = []
     for sample in dataset:
-        intent = IntentCategory(sample["intent"])
+        intent = IntentCategory(sample["gold_primary_intent"])
+        secondary_intents = [
+            IntentCategory(value) for value in sample.get("gold_secondary_intents", [])
+        ]
         urgency = UrgencyLevel.CRITICAL if intent in (IntentCategory.ESCALATION, IntentCategory.HUMAN_HANDOFF) else UrgencyLevel.MEDIUM
         req = Request(
             request_id=sample["id"], user_id="benchmark", conv_id="design-rationale", message=sample["message"],
             intent=intent, intent_group="benchmark", urgency=urgency,
-            intent_confidence=0.95, entities={}, history=[], context="",
+            intent_confidence=0.95, secondary_intents=secondary_intents,
+            entities={}, history=[], context="",
         )
         decision = orchestrator._route_decision(req)
         primary = decision.primary_agent.value
@@ -808,6 +812,27 @@ async def routing_benchmark(output_dir: Path, llm_probe: Dict[str, Any]) -> List
         "V1 Primary Only": role_metrics(rows, "V1 Primary Only"),
         "Current Primary + Supporting": role_metrics(rows, "Current Primary + Supporting"),
     }
+    gold_multi = [row for row in rows if len(row["required_roles"]) > 1]
+    predicted_multi = [row for row in rows if len(row["Current Primary + Supporting"]) > 1]
+    true_positive_multi = [row for row in predicted_multi if len(row["required_roles"]) > 1]
+    multi_precision = len(true_positive_multi) / len(predicted_multi) if predicted_multi else 0.0
+    multi_recall = len(true_positive_multi) / len(gold_multi) if gold_multi else 0.0
+    metrics["multi_agent_trigger"] = {
+        "Precision": round(multi_precision, 4),
+        "Recall": round(multi_recall, 4),
+        "F1": round(2 * multi_precision * multi_recall / (multi_precision + multi_recall), 4)
+        if multi_precision + multi_recall else 0.0,
+        "gold_multi_intent_samples": len(gold_multi),
+        "predicted_multi_agent_samples": len(predicted_multi),
+    }
+    metrics["semantic_multi_intent_recognition"] = {
+        "status": "NOT EXECUTED",
+        "Primary Intent Accuracy": "NOT EXECUTED",
+        "Secondary Intent Precision": "NOT EXECUTED",
+        "Secondary Intent Recall": "NOT EXECUTED",
+        "Secondary Intent F1": "NOT EXECUTED",
+        "reason": "Gold primary and secondary intents are injected to isolate routing mapping; this benchmark does not call the LLM recognizer.",
+    }
     bad_cases: List[Dict[str, Any]] = []
     for row in rows:
         gold = set(row["required_roles"])
@@ -828,8 +853,8 @@ async def routing_benchmark(output_dir: Path, llm_probe: Dict[str, Any]) -> List
 
     write_json(output_dir / "routing_ablation.json", envelope(
         "EXECUTED",
-        "Executed deterministic role-coverage evaluation with the production _route_decision implementation.",
-        "Fixes the gold intent to isolate routing design. Role coverage must not be interpreted as response quality.",
+        "Executed deterministic role-coverage and multi-agent trigger evaluation with the production _route_decision implementation.",
+        "Injects gold primary and secondary intents to isolate routing mapping. It does not measure semantic intent recognition or response quality.",
         {"metrics": metrics, "per_sample_results": rows, "observed_bad_cases": bad_cases},
     ))
     multi_status = "NOT EXECUTED"

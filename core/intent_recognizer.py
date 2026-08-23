@@ -65,6 +65,7 @@ class IntentResult:
     reasoning:  str
     latency_ms: float
     source_scores: Dict[str, float] = field(default_factory=dict)
+    secondary_intents: List[IntentCategory] = field(default_factory=list)
 
 
 # ── Few-shot 模板（同时用于 LLM 示例和 Embedding 匹配）────────────────────────
@@ -200,6 +201,10 @@ class IntentRecognizer:
             emb = {"intent": IntentCategory.OTHER, "confidence": 0.0}
 
         intent, confidence, source_scores = self._vote(llm, emb, pat)
+        secondary_intents = self._normalize_secondary_intents(
+            llm.get("secondary_intents", []),
+            primary=intent,
+        ) if not llm.get("failed") else []
         entities = self._extract_entities(message)
         urgency  = self._urgency(message, intent)
 
@@ -212,6 +217,7 @@ class IntentRecognizer:
             reasoning=llm.get("reasoning", ""),
             latency_ms=(time.monotonic() - t0) * 1000,
             source_scores=source_scores,
+            secondary_intents=secondary_intents,
         )
 
         # LRU 缓存
@@ -256,14 +262,25 @@ class IntentRecognizer:
 如果用户问题能匹配细粒度业务意图，请优先返回细粒度意图，而不是宽泛大类。
 例如退款优先返回 refund，发票优先返回 invoice，登录故障优先返回 technical_login。
 
+primary_intent 表示用户最主要的诉求。secondary_intents 只填写同一请求中真正独立存在的第二或第三诉求，
+不得因为出现相关名词就机械添加。普通单领域请求必须返回空数组；secondary 必须来自可选意图，
+不得与 primary 重复，最多返回 2 个。
+
 示例:
 {examples}
+
+多意图示例:
+  消息: "登录一直报401" → {{"primary_intent":"technical_login","secondary_intents":[]}}
+  消息: "登录一直报401，而且这个月还被重复扣款" → {{"primary_intent":"technical_login","secondary_intents":["payment_issue"]}}
+  消息: "这个月被重复扣款，而且系统一直报500" → {{"primary_intent":"payment_issue","secondary_intents":["technical_crash"]}}
+  消息: "我想了解一下套餐怎么用" → {{"primary_intent":"query","secondary_intents":[]}}
+  消息: "续费已经成功，但账号还是登录不了" → {{"primary_intent":"billing","secondary_intents":["technical_login"]}}
 
 {ctx}
 用户消息: "{message}"
 
 返回格式（仅 JSON，不要其他文字）:
-{{"intent": "<意图值>", "confidence": <0-1>, "reasoning": "<一句话说明>"}}
+{{"primary_intent": "<意图值>", "secondary_intents": ["<额外意图值>"], "confidence": <0-1>, "reasoning": "<一句话说明>"}}
 
 可选意图: {", ".join(c.value for c in IntentCategory)}"""
         prompt = self._clean_text(prompt)
@@ -276,16 +293,56 @@ class IntentRecognizer:
                 messages=[{"role": "user", "content": prompt}],
             )
             raw = extract_text_content(resp.content)
-            s, e = raw.find("{"), raw.rfind("}") + 1
-            data = json.loads(raw[s:e])
-            try:
-                data["intent"] = IntentCategory(data["intent"])
-            except ValueError:
-                data["intent"] = IntentCategory.OTHER
-            return data
+            return self._parse_llm_response(raw)
         except Exception as ex:
             logger.warning(f"LLM 识别失败: {ex}")
-            return {"intent": IntentCategory.OTHER, "confidence": 0.0, "reasoning": "LLM 失败", "failed": True}
+            return {
+                "intent": IntentCategory.OTHER,
+                "secondary_intents": [],
+                "confidence": 0.0,
+                "reasoning": "LLM 失败",
+                "failed": True,
+            }
+
+    @classmethod
+    def _parse_llm_response(cls, raw: str) -> Dict[str, Any]:
+        """解析单次 LLM 的主/辅意图输出，并保持旧 intent 键兼容。"""
+        start, end = raw.find("{"), raw.rfind("}") + 1
+        if start < 0 or end <= start:
+            raise ValueError("LLM 响应中没有 JSON 对象")
+        data = json.loads(raw[start:end])
+        primary_value = data.get("primary_intent", data.get("intent"))
+        try:
+            primary = IntentCategory(primary_value)
+        except (TypeError, ValueError):
+            primary = IntentCategory.OTHER
+        data["intent"] = primary
+        data["secondary_intents"] = cls._normalize_secondary_intents(
+            data.get("secondary_intents", []),
+            primary=primary,
+        )
+        return data
+
+    @staticmethod
+    def _normalize_secondary_intents(
+        values: Any,
+        primary: Optional[IntentCategory] = None,
+    ) -> List[IntentCategory]:
+        """忽略非法项、主意图重复项并去重，最多保留两个有效 secondary。"""
+        if not isinstance(values, list):
+            return []
+        normalized: List[IntentCategory] = []
+        for value in values:
+            try:
+                intent = value if isinstance(value, IntentCategory) else IntentCategory(value)
+            except (TypeError, ValueError):
+                continue
+            if intent == primary or intent in normalized:
+                continue
+            normalized.append(intent)
+            if len(normalized) == 2:
+                break
+        return normalized
 
     async def _embedding_recognize(self, message: str) -> Dict[str, Any]:
         """策略 2：Embedding 向量相似度匹配。"""
@@ -383,7 +440,10 @@ class IntentRecognizer:
             "product": [],
             "date": self._unique(re.findall(r"(今天|明天|昨天|本周|这周|下周|\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?)", message)),
             "amount": self._unique(re.findall(r"((?:¥|￥)\s*\d+(?:\.\d{1,2})?|\d+(?:\.\d{1,2})?\s*(?:元|块|rmb|cny|usd|美元))", message, re.I)),
-            "error_code": self._unique(re.findall(r"\b([45]\d{2}|[A-Z][A-Z0-9_-]{2,16})\b", message)),
+            "error_code": self._unique(
+                re.findall(r"(?<!\d)([45]\d{2})(?!\d)", message)
+                + re.findall(r"\b([A-Z][A-Z0-9_]{2,16})\b", message)
+            ),
         }
 
     # ── 辅助 ──────────────────────────────────────────────────────────────────

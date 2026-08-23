@@ -21,7 +21,7 @@
   "status_explanation": "Includes observed cases only. No fabricated cases were added for unexecuted LLM ablations.",
   "methodology": "Automatically aggregates the raw Intent, Direct RAG, Routing, Skills, and Tool results.",
   "results": {
-    "bad_case_count": 29,
+    "bad_case_count": 34,
     "by_feature": {
       "Intent Fusion": [
         {
@@ -290,6 +290,94 @@
           ],
           "current_roles": [
             "billing",
+            "technical"
+          ],
+          "measured_effect": "Current covers the gold role set while the baseline does not."
+        },
+        {
+          "id": "BC-ROUTE-016",
+          "feature": "Primary / Supporting Routing",
+          "input": "续费已经成功，但账号还是登录不了。",
+          "required_roles": [
+            "billing",
+            "technical"
+          ],
+          "Baseline": "V0 General Only",
+          "baseline_roles": [
+            "general"
+          ],
+          "current_roles": [
+            "billing",
+            "technical"
+          ],
+          "measured_effect": "Current covers the gold role set while the baseline does not."
+        },
+        {
+          "id": "BC-ROUTE-017",
+          "feature": "Primary / Supporting Routing",
+          "input": "续费已经成功，但账号还是登录不了。",
+          "required_roles": [
+            "billing",
+            "technical"
+          ],
+          "Baseline": "V1 Primary Only",
+          "baseline_roles": [
+            "billing"
+          ],
+          "current_roles": [
+            "billing",
+            "technical"
+          ],
+          "measured_effect": "Current covers the gold role set while the baseline does not."
+        },
+        {
+          "id": "BC-ROUTE-018",
+          "feature": "Primary / Supporting Routing",
+          "input": "我已经付费了，但高级功能还是没开通。",
+          "required_roles": [
+            "billing",
+            "technical"
+          ],
+          "Baseline": "V0 General Only",
+          "baseline_roles": [
+            "general"
+          ],
+          "current_roles": [
+            "billing",
+            "technical"
+          ],
+          "measured_effect": "Current covers the gold role set while the baseline does not."
+        },
+        {
+          "id": "BC-ROUTE-019",
+          "feature": "Primary / Supporting Routing",
+          "input": "我已经付费了，但高级功能还是没开通。",
+          "required_roles": [
+            "billing",
+            "technical"
+          ],
+          "Baseline": "V1 Primary Only",
+          "baseline_roles": [
+            "billing"
+          ],
+          "current_roles": [
+            "billing",
+            "technical"
+          ],
+          "measured_effect": "Current covers the gold role set while the baseline does not."
+        },
+        {
+          "id": "BC-ROUTE-020",
+          "feature": "Primary / Supporting Routing",
+          "input": "账单显示正常，但 SSO 一直认证失败。",
+          "required_roles": [
+            "technical"
+          ],
+          "Baseline": "V0 General Only",
+          "baseline_roles": [
+            "general"
+          ],
+          "current_roles": [
             "technical"
           ],
           "measured_effect": "Current covers the gold role set while the baseline does not."
@@ -689,6 +777,94 @@
         ],
         "current_roles": [
           "billing",
+          "technical"
+        ],
+        "measured_effect": "Current covers the gold role set while the baseline does not."
+      },
+      {
+        "id": "BC-ROUTE-016",
+        "feature": "Primary / Supporting Routing",
+        "input": "续费已经成功，但账号还是登录不了。",
+        "required_roles": [
+          "billing",
+          "technical"
+        ],
+        "Baseline": "V0 General Only",
+        "baseline_roles": [
+          "general"
+        ],
+        "current_roles": [
+          "billing",
+          "technical"
+        ],
+        "measured_effect": "Current covers the gold role set while the baseline does not."
+      },
+      {
+        "id": "BC-ROUTE-017",
+        "feature": "Primary / Supporting Routing",
+        "input": "续费已经成功，但账号还是登录不了。",
+        "required_roles": [
+          "billing",
+          "technical"
+        ],
+        "Baseline": "V1 Primary Only",
+        "baseline_roles": [
+          "billing"
+        ],
+        "current_roles": [
+          "billing",
+          "technical"
+        ],
+        "measured_effect": "Current covers the gold role set while the baseline does not."
+      },
+      {
+        "id": "BC-ROUTE-018",
+        "feature": "Primary / Supporting Routing",
+        "input": "我已经付费了，但高级功能还是没开通。",
+        "required_roles": [
+          "billing",
+          "technical"
+        ],
+        "Baseline": "V0 General Only",
+        "baseline_roles": [
+          "general"
+        ],
+        "current_roles": [
+          "billing",
+          "technical"
+        ],
+        "measured_effect": "Current covers the gold role set while the baseline does not."
+      },
+      {
+        "id": "BC-ROUTE-019",
+        "feature": "Primary / Supporting Routing",
+        "input": "我已经付费了，但高级功能还是没开通。",
+        "required_roles": [
+          "billing",
+          "technical"
+        ],
+        "Baseline": "V1 Primary Only",
+        "baseline_roles": [
+          "billing"
+        ],
+        "current_roles": [
+          "billing",
+          "technical"
+        ],
+        "measured_effect": "Current covers the gold role set while the baseline does not."
+      },
+      {
+        "id": "BC-ROUTE-020",
+        "feature": "Primary / Supporting Routing",
+        "input": "账单显示正常，但 SSO 一直认证失败。",
+        "required_roles": [
+          "technical"
+        ],
+        "Baseline": "V0 General Only",
+        "baseline_roles": [
+          "general"
+        ],
+        "current_roles": [
           "technical"
         ],
         "measured_effect": "Current covers the gold role set while the baseline does not."

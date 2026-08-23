@@ -366,6 +366,7 @@ async def chat(req: ChatRequest):
         history=history,
         entities=intent_result.entities,
         intent=intent_result.intent,
+        secondary_intents=intent_result.secondary_intents,
         intent_group=intent_result.intent_group,
         urgency=intent_result.urgency,
         intent_confidence=intent_result.confidence,
