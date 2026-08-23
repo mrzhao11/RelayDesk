@@ -18,6 +18,7 @@
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -41,9 +42,43 @@ class AgentType(Enum):
     ESCALATION = "escalation" # 人工升级（占位）
 
 
+# Supporting Agent 只由这些集中维护的强证据触发。这里有意不包含
+# “套餐”“帮助”“问题”等宽泛词，以高 Precision 为优先目标。
+DOMAIN_STRONG_SIGNALS: Dict[AgentType, tuple[tuple[str, str], ...]] = {
+    AgentType.TECHNICAL: (
+        ("401", r"(?<!\d)401(?!\d)"),
+        ("403", r"(?<!\d)403(?!\d)"),
+        ("500", r"(?<!\d)500(?!\d)"),
+        ("error", r"\berror\b"),
+        ("crash", r"\bcrash(?:ed|es|ing)?\b"),
+        ("崩溃", r"崩溃"),
+        ("登录失败", r"登录失败"),
+        ("无法登录", r"无法登录"),
+        ("验证码异常", r"验证码.{0,6}(?:异常|失败|收不到|无法获取)"),
+    ),
+    AgentType.BILLING: (
+        ("退款", r"退款"),
+        ("重复扣款", r"重复扣款"),
+        ("多扣", r"多扣"),
+        ("重复交易", r"(?:扣了|收了|出现)(?:两次|两遍)|两笔(?:相同|一样)(?:扣款|交易)"),
+        ("陌生扣款", r"陌生扣款"),
+        ("支付失败", r"支付失败"),
+        ("发票", r"发票"),
+        ("账单异常", r"账单.{0,6}(?:异常|有误|不对)"),
+        ("refund", r"\brefund\b"),
+        ("invoice", r"\binvoice\b"),
+    ),
+}
+
+DOMAIN_ENTITY_SIGNALS: Dict[AgentType, tuple[str, ...]] = {
+    AgentType.TECHNICAL: ("error_code",),
+    AgentType.BILLING: ("amount",),
+}
+
+
 @dataclass
 class AgentStats:
-    """Agent 运行时统计，供 Monitor 和路由决策使用。"""
+    """Agent 运行时统计，供 Monitor 和同类型多实例择优使用。"""
     total:     int   = 0
     success:   int   = 0
     total_ms:  float = 0.0
@@ -58,7 +93,7 @@ class AgentStats:
         return self.total_ms / self.total if self.total else 0.0
 
     def routing_score(self) -> float:
-        """路由评分：成功率高、延迟低的 Agent 得分高。"""
+        """实例级评分：只在同类型有多个 Agent 实例时用于择优。"""
         latency_score = 1.0 / (1.0 + self.avg_ms / 1000)
         base_score = self.success_rate * 0.7 + latency_score * 0.3
         return base_score * max(0.0, 1.0 - self.monitor_penalty)
@@ -106,7 +141,11 @@ class OrchestratorResult:
 
 @dataclass
 class RoutingDecision:
-    """一次请求的结构化路由决策。"""
+    """一次请求的结构化路由决策。
+
+    confidence 表示 Primary 路由沿用的 Intent 置信度，不是独立计算的
+    路由概率；Supporting 由可解释的强证据触发，不产生伪精确分数。
+    """
     primary_agent: AgentType
     supporting_agents: List[AgentType] = field(default_factory=list)
     reason: str = ""
@@ -512,8 +551,8 @@ class AgentOrchestrator:
         """
         结构化路由决策。
 
-        先处理紧急/转人工，再用领域分数决定主 Agent 和辅助 Agent。
-        这样可以表达“主处理 + 辅助诊断”，避免关键词命中后无主次地拼接。
+        Primary 只由最终 Intent 映射，Routing 层不重复进行领域打分。
+        Supporting 只检查 Primary 之外的 Technical/Billing 强证据。
         """
         if req.urgency == UrgencyLevel.CRITICAL:
             return RoutingDecision(
@@ -529,156 +568,61 @@ class AgentOrchestrator:
                 confidence=max(req.intent_confidence, 0.8),
             )
 
-        scores = self._domain_scores(req)
-        available_scores = {
-            agent_type: score
-            for agent_type, score in scores.items()
-            if agent_type == AgentType.GENERAL or self._pool.get(agent_type)
-        }
-        if not available_scores:
-            return RoutingDecision(
-                primary_agent=AgentType.GENERAL,
-                reason="无可用专属 Agent，降级到 GeneralAgent",
-                confidence=0.1,
-            )
+        primary_agent = self._route(req.intent, req.urgency)
+        supporting_evidence = self._supporting_strong_evidence(req, primary_agent)
+        supporting_agents = list(supporting_evidence)
+        intent_name = req.intent.value if req.intent else "unknown"
+        reason_parts = [f"primary={primary_agent.value} from intent={intent_name}"]
+        if supporting_evidence:
+            for agent_type, evidence in supporting_evidence.items():
+                reason_parts.append(
+                    f"supporting={agent_type.value} because {', '.join(evidence)}"
+                )
+        else:
+            reason_parts.append("supporting=none; no strong cross-domain evidence")
 
-        ordered = sorted(available_scores.items(), key=lambda item: item[1], reverse=True)
-        primary_agent, primary_score = ordered[0]
-        # 复用既有复合领域检测，确保“技术 + 费用”请求能形成主辅协作。
-        explicit_targets = self._collaboration_targets(req)
-        supporting_agents = [
-            agent_type
-            for agent_type in explicit_targets
-            if agent_type != primary_agent and self._pool.get(agent_type)
-        ]
-        score_based_support = [
-            agent_type
-            for agent_type, score in ordered[1:]
-            if agent_type != AgentType.GENERAL and score >= 0.45 and score >= primary_score * 0.55
-        ]
-        supporting_agents = list(dict.fromkeys(supporting_agents + score_based_support))
-
-        reason = self._routing_reason(req, available_scores, primary_agent, supporting_agents)
         return RoutingDecision(
             primary_agent=primary_agent,
             supporting_agents=supporting_agents,
-            reason=reason,
-            confidence=round(min(primary_score, 1.0), 3),
+            reason="; ".join(reason_parts),
+            confidence=req.intent_confidence,
         )
 
-    def _domain_scores(self, req: Request) -> Dict[AgentType, float]:
-        """按意图、关键词和实体为各领域 Agent 打分。"""
-        msg = req.message.lower()
-        scores = {
-            AgentType.GENERAL: 0.1,
-            AgentType.TECHNICAL: 0.0,
-            AgentType.BILLING: 0.0,
-        }
-
-        if req.intent in (
-            IntentCategory.QUERY,
-            IntentCategory.ORDER_STATUS,
-            IntentCategory.LOGISTICS,
-            IntentCategory.REQUEST,
-            IntentCategory.COMPLAINT,
-            IntentCategory.GREETING,
-            IntentCategory.FEEDBACK,
-            IntentCategory.OTHER,
-        ):
-            scores[AgentType.GENERAL] += 0.55
-
-        if req.intent in (
-            IntentCategory.TECHNICAL,
-            IntentCategory.TECHNICAL_LOGIN,
-            IntentCategory.TECHNICAL_CRASH,
-        ):
-            scores[AgentType.TECHNICAL] += 0.75
-
-        if req.intent in (
-            IntentCategory.BILLING,
-            IntentCategory.REFUND,
-            IntentCategory.INVOICE,
-            IntentCategory.PAYMENT_ISSUE,
-        ):
-            scores[AgentType.BILLING] += 0.75
-
-        if req.intent == IntentCategory.ACCOUNT:
-            scores[AgentType.GENERAL] += 0.75
-
-        if req.intent == IntentCategory.ACCOUNT_SECURITY:
-            scores[AgentType.TECHNICAL] += 0.75
-
-        technical_kws = ["崩溃", "报错", "error", "crash", "无法登录", "登录失败", "500", "401", "验证码"]
-        billing_kws = ["退款", "退货", "扣款", "发票", "账单", "支付", "订阅", "refund", "invoice", "多扣"]
-        general_kws = ["订单", "物流", "快递", "配送", "会员", "积分", "咨询", "帮助"]
-
-        technical_hits = sum(1 for kw in technical_kws if kw in msg)
-        billing_hits = sum(1 for kw in billing_kws if kw in msg)
-        general_hits = sum(1 for kw in general_kws if kw in msg)
-
-        scores[AgentType.TECHNICAL] += min(0.45, technical_hits * 0.18)
-        scores[AgentType.BILLING] += min(0.45, billing_hits * 0.18)
-        scores[AgentType.GENERAL] += min(0.35, general_hits * 0.12)
-
-        entities = req.entities or {}
-        if entities.get("error_code"):
-            scores[AgentType.TECHNICAL] += 0.2
-        if entities.get("amount"):
-            scores[AgentType.BILLING] += 0.15
-        if entities.get("order_id"):
-            scores[AgentType.GENERAL] += 0.1
-
-        return {agent_type: round(score, 3) for agent_type, score in scores.items()}
-
-    @staticmethod
-    def _routing_reason(
+    def _supporting_strong_evidence(
+        self,
         req: Request,
-        scores: Dict[AgentType, float],
         primary_agent: AgentType,
-        supporting_agents: List[AgentType],
-    ) -> str:
-        score_text = ", ".join(
-            f"{agent_type.value}={score:.2f}"
-            for agent_type, score in sorted(scores.items(), key=lambda item: item[1], reverse=True)
-        )
-        support_text = ", ".join(agent.value for agent in supporting_agents) or "none"
-        intent = req.intent.value if req.intent else "unknown"
-        return (
-            f"intent={intent}, group={req.intent_group or 'unknown'}, "
-            f"primary={primary_agent.value}, supporting={support_text}, scores=[{score_text}]"
-        )
+    ) -> Dict[AgentType, List[str]]:
+        """返回非 Primary 领域的 Supporting Agent 及其强证据。
 
-    def _collaboration_targets(self, req: Request) -> List[AgentType]:
+        当前只允许 Technical 与 Billing 互为 Supporting。General 不作为
+        Supporting，也不因为宽泛业务词触发协作。每个领域最多返回一次。
         """
-        判断是否需要多个 Agent 并行协作。
+        if primary_agent == AgentType.TECHNICAL:
+            candidate_domains = (AgentType.BILLING,)
+        elif primary_agent == AgentType.BILLING:
+            candidate_domains = (AgentType.TECHNICAL,)
+        else:
+            return {}
 
-        意图识别通常只返回一个主意图；这里用领域关键词补充检测复合问题，
-        例如"登录报错且被重复扣款"需要技术和账单 Agent 同时处理。
-        """
-        msg = req.message.lower()
-        targets: List[AgentType] = []
+        message = (req.message or "").lower()
+        entities = req.entities or {}
+        candidates: Dict[AgentType, List[str]] = {}
+        for domain in candidate_domains:
+            evidence: List[str] = []
+            for label, pattern in DOMAIN_STRONG_SIGNALS[domain]:
+                if re.search(pattern, message, flags=re.IGNORECASE):
+                    evidence.append(f"keyword={label}")
+            for entity_name in DOMAIN_ENTITY_SIGNALS[domain]:
+                if entities.get(entity_name):
+                    evidence.append(f"entity={entity_name}")
 
-        technical_kws = ["崩溃", "报错", "error", "crash", "无法登录", "登录失败", "500", "401"]
-        billing_kws = ["退款", "扣款", "发票", "账单", "支付", "订阅", "refund", "invoice"]
+            # 单个强关键词、单个强 Entity，或多个强证据均可触发。
+            evidence = list(dict.fromkeys(evidence))
+            if evidence and self._pool.get(domain):
+                candidates[domain] = evidence
 
-        if req.intent in (
-            IntentCategory.TECHNICAL,
-            IntentCategory.TECHNICAL_LOGIN,
-            IntentCategory.TECHNICAL_CRASH,
-            IntentCategory.ACCOUNT_SECURITY,
-        ) or any(kw in msg for kw in technical_kws):
-            targets.append(AgentType.TECHNICAL)
-        if req.intent in (
-            IntentCategory.BILLING,
-            IntentCategory.REFUND,
-            IntentCategory.INVOICE,
-            IntentCategory.PAYMENT_ISSUE,
-        ) or any(kw in msg for kw in billing_kws):
-            targets.append(AgentType.BILLING)
-
-        # 保持顺序去重，并只返回当前有实例的 Agent 类型。
-        deduped = list(dict.fromkeys(targets))
-        return [agent_type for agent_type in deduped if self._pool.get(agent_type)]
+        return candidates
 
     @staticmethod
     def _needs_clarification(req: Request) -> bool:

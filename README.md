@@ -588,6 +588,8 @@ curl -X POST http://localhost:8000/chat \
 
 这类问题会触发多 Agent 并行协作，由技术 Agent 和账单 Agent 分别处理后合并回复。
 
+Primary Agent 只由最终 Intent 的静态映射决定，Routing 层不再重复计算领域分数。Supporting Agent 仅在 Technical 与 Billing 之间检查集中维护的强证据，例如 `401/403/500`、登录失败、重复扣款、支付失败、发票，以及 `error_code`、`amount` 实体；`套餐`、`帮助`、`问题`等宽泛词不会触发协作。路由原因会记录具体依据，`routing_confidence` 直接沿用 Intent 置信度，不表示重新计算的路由概率。
+
 ## 7. 知识库使用
 
 RelayDesk 的知识库由 `mcp/knowledge_base.py` 管理，底层使用 ChromaDB collection：
